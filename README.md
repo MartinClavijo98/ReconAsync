@@ -1,8 +1,6 @@
 
 # ReconAsync - Advanced Asynchronous Reconnaissance Tool
 
-![ReconAsync Logo](https://via.placeholder.com/150) <!-- Replace with actual logo if available -->
-
 **ReconAsync** is a powerful, cross-platform reconnaissance automation script that leverages Python's `asyncio` and `aiohttp` for high-concurrency HTTP scanning, combined with industry-standard external tools to perform comprehensive security reconnaissance.
 
 ## Table of Contents

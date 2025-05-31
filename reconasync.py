@@ -233,7 +233,7 @@ def run_httpx():
         return False
     
     print_status("Running httpx on subdomains")
-    cmd = f"httpx -l {input_file} -sc -title -tech-detect -ip -o {output_file}"
+    cmd = f"httpx -list {input_file} -sc -title -tech-detect -ip -o {output_file}"
     _, stderr, retcode = run_command(cmd)
     
     if retcode == 0:
@@ -272,7 +272,7 @@ def run_gau(domain):
 def run_paramspider(domain):
     """Run paramspider on domain"""
     output_file = "paramspider.txt"
-    cmd = f"paramspider -d {domain} -o {output_file}"
+    cmd = f"paramspider -d {domain} > {output_file}"
     print_status(f"Running paramspider on {domain}")
     
     _, stderr, retcode = run_command(cmd)

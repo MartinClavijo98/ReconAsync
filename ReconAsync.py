@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Filename    : recon_async.py
-Description : Cross-platform asynchronous reconnaissance script with automatic dependency installation
+Description : Enhanced cross-platform asynchronous reconnaissance script with automatic dependency installation
 Usage       : python3 recon_async.py <target-domain> [--url <example-url>] [--install]
 """
 
@@ -50,16 +50,16 @@ GO_TOOLS = {
     }
 }
 
-# We remove paramspider from simple PyPI list and handle it specially via git clone.
 PYPI_TOOLS = {
     "dirsearch": "dirsearch"
 }
 
-MAX_HTTP_CONCURRENCY = 50
-DEFAULT_WORDLIST_LINUX = "/usr/share/wordlists/dirbuster/directory-list-lowercase-2.3-medium.txt"
-DEFAULT_WORDLIST_WINDOWS = r"C:\wordlists\directory-list-lowercase-2.3-medium.txt"
+# Wordlist configuration
+DEFAULT_WORDLIST_NAME = "directory-list-2.3-medium.txt"
+WORDLIST_URL = "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/" + DEFAULT_WORDLIST_NAME
+WORDLIST_DIR = os.path.join(os.getcwd(), "wordlists")
 
-# Initialize virtual environment path
+MAX_HTTP_CONCURRENCY = 50
 VENV_PATH = os.path.join(os.getcwd(), "recon_venv")
 PYTHON_BIN = sys.executable
 
@@ -121,7 +121,7 @@ def install_python_tool(tool_name, package_name):
     """Install a Python tool via pip in the virtual environment."""
     print(f"[*] Installing Python tool: {tool_name}...")
     pip_path = create_virtualenv()
-    cmd = f"{pip_path} install {package_name} --break-system-packages"
+    cmd = f"{pip_path} install {package_name}"
     ret, out, err = run_subprocess_sync(cmd, capture_output=True)
     if ret == 0:
         print(f"[+] {tool_name} installed successfully.")
@@ -131,10 +131,7 @@ def install_python_tool(tool_name, package_name):
         return False
 
 def install_paramspider():
-    """
-    Install paramspider by cloning its GitHub repository and running setup.py.
-    Falls back to an automatic git-based installation if paramspider is not in PATH.
-    """
+    """Install paramspider by cloning its GitHub repository and running setup.py."""
     print("[*] Installing Python tool: paramspider...")
     if check_binary("paramspider"):
         print("[+] paramspider is already installed.")
@@ -142,7 +139,6 @@ def install_paramspider():
 
     tmp_dir = tempfile.mkdtemp(prefix="paramspider_")
     try:
-        # Clone the paramspider repo
         repo_url = "https://github.com/devanshbatham/ParamSpider.git"
         clone_cmd = f"git clone {repo_url} {tmp_dir}"
         ret, out, err = run_subprocess_sync(clone_cmd, capture_output=True)
@@ -150,7 +146,6 @@ def install_paramspider():
             print(f"[!] Failed to clone paramspider repo: {err}")
             return False
 
-        # Install requirements.txt if exists
         req_file = os.path.join(tmp_dir, "requirements.txt")
         if os.path.isfile(req_file):
             pip_path = create_virtualenv()
@@ -158,9 +153,7 @@ def install_paramspider():
             ret, out, err = run_subprocess_sync(install_reqs_cmd, capture_output=True)
             if ret != 0:
                 print(f"[!] Failed to install paramspider requirements: {err}")
-                # Continue to try the setup even if requirements failed
 
-        # Run setup.py install
         setup_path = os.path.join(tmp_dir, "setup.py")
         if os.path.isfile(setup_path):
             install_cmd = f"{PYTHON_BIN} {setup_path} install"
@@ -174,13 +167,10 @@ def install_paramspider():
         else:
             print("[!] setup.py not found in paramspider repo.")
             return False
-
     except Exception as e:
         print(f"[!] Exception during paramspider installation: {e}")
         return False
-
     finally:
-        # Clean up temporary directory
         try:
             shutil.rmtree(tmp_dir)
         except Exception:
@@ -190,9 +180,8 @@ def install_go_tool(tool_name, go_path):
     """Install Go tools with proper error handling."""
     print(f"[*] Installing Go tool: {tool_name}...")
 
-    # Verify 'go' binary exists
     if not check_binary("go"):
-        print(f"[!] 'go' command not found. Please install Go before proceeding.")
+        print("[!] 'go' command not found. Please install Go before proceeding.")
         return False
 
     cmd = f"go install {go_path}"
@@ -201,7 +190,6 @@ def install_go_tool(tool_name, go_path):
         print(f"[+] {tool_name} installed successfully.")
         return True
 
-    # If standard installation fails, try alternative methods (currently none for other tools)
     print(f"[!] Standard installation failed for {tool_name}: {err}")
     return False
 
@@ -211,22 +199,39 @@ def install_system_dependencies():
     if is_linux():
         print("[*] Installing basic system dependencies for Linux...")
         run_subprocess_sync("sudo apt-get update -y")
-        run_subprocess_sync("sudo apt-get install -y git golang python3-venv python3-pip")
-
-        # Try to install default wordlist for dirsearch, but ignore errors if not found
-        if not os.path.exists(DEFAULT_WORDLIST_LINUX):
-            run_subprocess_sync("sudo apt-get install -y wordlists")
+        run_subprocess_sync("sudo apt-get install -y git golang python3-venv python3-pip wget")
     elif is_windows():
         print("[*] Please ensure you have Git, Go, and Python installed on Windows.")
         print("[*] You may need to install Chocolatey first: https://chocolatey.org/install")
         run_subprocess_sync("choco install git golang python -y")
+
+def ensure_wordlist():
+    """Ensure the wordlist is available before starting reconnaissance."""
+    os.makedirs(WORDLIST_DIR, exist_ok=True)
+    wordlist_path = os.path.join(WORDLIST_DIR, DEFAULT_WORDLIST_NAME)
+
+    if os.path.isfile(wordlist_path) and os.path.getsize(wordlist_path) > 0:
+        print(f"[+] Wordlist found at {wordlist_path}")
+        return True
+
+    print("[*] Wordlist not found, attempting to download...")
+    try:
+        ret, out, err = run_subprocess_sync(f"wget {WORDLIST_URL} -O {wordlist_path}")
+        if ret == 0 and os.path.getsize(wordlist_path) > 0:
+            print(f"[+] Successfully downloaded wordlist to {wordlist_path}")
+            return True
+        else:
+            print(f"[!] Failed to download wordlist: {err}")
+            return False
+    except Exception as e:
+        print(f"[!] Exception while downloading wordlist: {str(e)}")
+        return False
 
 def ensure_tools_installed():
     """Ensure all required tools are installed (Go, Python, paramspider)."""
     setup_environment()
     install_system_dependencies()
 
-    # Install Go tools
     for tool, info in GO_TOOLS.items():
         if not check_binary(tool):
             success = install_go_tool(tool, info["install"])
@@ -235,7 +240,6 @@ def ensure_tools_installed():
         else:
             print(f"[+] {tool} is already installed.")
 
-    # Install Python tools via pip
     for tool, pkg in PYPI_TOOLS.items():
         if not check_binary(tool):
             success = install_python_tool(tool, pkg)
@@ -244,13 +248,12 @@ def ensure_tools_installed():
         else:
             print(f"[+] {tool} is already installed.")
 
-    # Install paramspider via GitHub if missing
     if not check_binary("paramspider"):
         success = install_paramspider()
         if not success:
             print("[!] Warning: paramspider installation failed.")
     else:
-        print(f"[+] paramspider is already installed.")
+        print("[+] paramspider is already installed.")
 
     print("[+] Tool installation verification complete.")
 
@@ -260,7 +263,6 @@ def write_domain_file(domain: str):
         f.write(domain + "\n")
     print(f"[+] domain.txt created with {domain}")
 
-# Asynchronous Recon Tasks
 async def run_subprocess_async(cmd: str, outfile: str = None):
     """Run a shell command asynchronously and optionally save output."""
     print(f"[+] Running (async): {cmd}")
@@ -393,32 +395,28 @@ async def recon_paramspider(domain: str):
 
 async def recon_dirsearch(url: str):
     """
-    Run dirsearch on a provided URL. If default wordlist not found, attempt to download it.
+    Run dirsearch on a provided URL with improved wordlist handling.
     Save results to 'dirsearch.txt'.
     """
     if not url:
         print("[!] URL not provided, skipping dirsearch.")
         return
 
-    wordlist = DEFAULT_WORDLIST_LINUX if is_linux() else DEFAULT_WORDLIST_WINDOWS
-    if not os.path.isfile(wordlist):
-        print(f"[!] Wordlist not found: {wordlist}")
-        if is_linux():
-            print("[*] Attempting to download common wordlist...")
-            wordlist_url = "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/directory-list-2.3-medium.txt"
-            wordlist = os.path.join(os.getcwd(), "directory-list-2.3-medium.txt")
-            cmd = f"wget {wordlist_url} -O {wordlist}"
-            run_subprocess_sync(cmd)
-        else:
-            print("[!] Please download a wordlist manually")
-            return
+    wordlist_path = os.path.join(WORDLIST_DIR, DEFAULT_WORDLIST_NAME)
 
-    if not os.path.isfile(wordlist):
-        print("[!] Could not download wordlist, skipping dirsearch")
+    if not os.path.isfile(wordlist_path) or os.path.getsize(wordlist_path) == 0:
+        print("[!] Wordlist not available, skipping dirsearch")
         return
 
-    cmd = f"dirsearch -u {url} -e php,asp,aspx,jsp,html,js,json -w {wordlist} --plain-text-report=dirsearch.txt"
-    await run_subprocess_async(cmd)
+    dirsearch_cmd = (
+        f"dirsearch -u {url} "
+        f"-e php,asp,aspx,jsp,html,js,json "
+        f"-w \"{wordlist_path}\" "
+        f"--plain-text-report=dirsearch.txt"
+    )
+
+    print(f"[*] Running dirsearch with command: {dirsearch_cmd}")
+    await run_subprocess_async(dirsearch_cmd)
 
 async def main():
     parser = argparse.ArgumentParser(description='Automated reconnaissance script with dependency installation')
@@ -430,14 +428,14 @@ async def main():
     if args.install:
         print("[*] Starting tool installation process...")
         ensure_tools_installed()
-        print("[+] Tool installation complete. You can now run the reconnaissance.")
+        ensure_wordlist()
+        print("[+] Installation complete. You can now run the reconnaissance.")
         sys.exit(0)
 
     if not args.domain and not args.url:
         parser.print_usage()
         sys.exit(1)
 
-    # Extract domain from URL if not provided
     if args.url and not args.domain:
         parsed = urlparse(args.url)
         args.domain = parsed.netloc if parsed.netloc else args.url.split('/')[0]
@@ -450,19 +448,11 @@ async def main():
     if url:
         print(f"[*] URL provided for additional scanning: {url}")
 
-    # Verify all tools are installed
     print("[*] Verifying tool installation...")
     ensure_tools_installed()
 
-    # Check for missing tools
-    required_tools = list(GO_TOOLS.keys()) + list(PYPI_TOOLS.keys()) + ["paramspider"]
-    missing_tools = [tool for tool in required_tools if not check_binary(tool)]
-
-    if missing_tools:
-        print(f"[!] The following required tools are missing: {', '.join(missing_tools)}")
-        print("[!] Please install them manually or use --install flag")
-        print("[!] Some tools might need to be installed with sudo or in a virtual environment")
-        sys.exit(1)
+    if not ensure_wordlist():
+        print("[!] Wordlist is required but could not be downloaded. Directory brute-forcing will be disabled.")
 
     write_domain_file(domain)
 

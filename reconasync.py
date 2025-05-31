@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Enhanced Reconnaissance Toolkit (ERT)
-Version: 2.0.1
+Enhanced Reconnaissance Toolkit (ERT) - Optimized Final Version
+Version: 2.1.0
 """
 
 import os
@@ -11,8 +11,6 @@ import shutil
 import platform
 import asyncio
 import argparse
-import tempfile
-import venv
 import time
 import json
 import csv
@@ -21,176 +19,202 @@ from urllib.parse import urlparse
 from datetime import datetime
 
 # Configuration
-VERSION = "2.0.1"
-DEFAULT_WORDLIST_NAME = "directory-list-2.3-medium.txt"
-WORDLIST_URL = ("https://raw.githubusercontent.com/danielmiessler/SecLists/master/"
-               "Discovery/Web-Content/" + DEFAULT_WORDLIST_NAME)
-WORDLIST_DIR = os.path.join(os.getcwd(), "wordlists")
-OUTPUT_DIR = os.path.join(os.getcwd(), "recon_results")
-TOOL_TIMEOUT = 600  # 10 minutes per tool
+VERSION = "2.1.0"
+DEFAULT_WORDLIST = "directory-list-2.3-medium.txt"
+WORDLIST_URL = f"https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/{DEFAULT_WORDLIST}"
+OUTPUT_DIR = "recon_results"
+TOOL_TIMEOUT = 600  # 10 minutes
 
-# Required Tools
+# Tool Configuration
 TOOLS = {
-    "subfinder": "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
-    "assetfinder": "github.com/tomnomnom/assetfinder@latest",
-    "httpx": "github.com/projectdiscovery/httpx/cmd/httpx@latest",
-    "gau": "github.com/lc/gau/v2/cmd/gau@latest",
-    "waybackurls": "github.com/tomnomnom/waybackurls@latest",
-    "dirsearch": "pip install dirsearch",
-    "paramspider": "pip install git+https://github.com/devanshbatham/ParamSpider.git"
+    # Go tools
+    "subfinder": {
+        "install": "go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
+        "cmd": "subfinder -d {target} -silent -o {output}"
+    },
+    "assetfinder": {
+        "install": "go install github.com/tomnomnom/assetfinder@latest",
+        "cmd": "assetfinder --subs-only {target} > {output}"
+    },
+    "httpx": {
+        "install": "go install github.com/projectdiscovery/httpx/cmd/httpx@latest",
+        "cmd": "httpx -l {input} -silent -json -o {output}"
+    },
+    "gau": {
+        "install": "go install github.com/lc/gau/v2/cmd/gau@latest",
+        "cmd": "echo {target} | gau > {output}"
+    },
+    "waybackurls": {
+        "install": "go install github.com/tomnomnom/waybackurls@latest",
+        "cmd": "echo {target} | waybackurls > {output}"
+    },
+    
+    # Python tools
+    "dirsearch": {
+        "install": "pip install dirsearch",
+        "cmd": "dirsearch -u {target} -e php,asp,aspx,jsp,html,js,json -w {wordlist} -o {output}"
+    },
+    "paramspider": {
+        "install": "pip install git+https://github.com/devanshbatham/ParamSpider.git",
+        "cmd": "paramspider -d {target} -o {output}"
+    }
 }
 
 def setup_environment():
-    """Setup necessary environment variables."""
-    os.environ["GOPROXY"] = "https://goproxy.io,direct"
-    os.environ["GO111MODULE"] = "on"
-    gopath = os.environ.get("GOPATH", os.path.join(os.getcwd(), "go"))
-    bin_path = os.path.join(gopath, "bin")
-    if bin_path not in os.environ.get("PATH", "").split(os.pathsep):
-        os.environ["PATH"] = f"{bin_path}{os.pathsep}{os.environ['PATH']}"
+    """Configure environment variables for Go tools."""
+    os.environ.update({
+        "GOPROXY": "https://goproxy.io,direct",
+        "GO111MODULE": "on"
+    })
+    
+    # Add Go bin to PATH if not present
+    go_path = os.path.join(os.environ.get("GOPATH", os.path.join(os.getcwd(), "go")), "bin")
+    if go_path not in os.environ["PATH"]:
+        os.environ["PATH"] = f"{go_path}{os.pathsep}{os.environ['PATH']}"
 
-def check_binary(binary_name):
-    """Check if a binary exists in PATH."""
-    return shutil.which(binary_name) is not None
-
-def run_command(cmd, capture_output=False, timeout=None):
-    """Run a shell command with error handling."""
-    try:
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            stdout=subprocess.PIPE if capture_output else None,
-            stderr=subprocess.PIPE if capture_output else None,
-            text=True,
-            timeout=timeout
-        )
-        if capture_output:
-            return result.returncode, result.stdout.strip(), result.stderr.strip()
-        return result.returncode, None, None
-    except subprocess.TimeoutExpired:
-        print(f"[!] Command timed out: {cmd}")
-        return -2, None, "Command timed out"
-    except Exception as e:
-        print(f"[!] Error running command: {str(e)}")
-        return -1, None, str(e)
-
-async def run_async_command(cmd, timeout=TOOL_TIMEOUT):
-    """Run a shell command asynchronously."""
-    try:
-        process = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-        return process.returncode, stdout.decode().strip() if stdout else "", stderr.decode().strip() if stderr else ""
-    except Exception as e:
-        print(f"[!] Async command error: {str(e)}")
-        return -1, "", str(e)
+def check_requirements():
+    """Verify all required binaries are available."""
+    missing = []
+    for tool in TOOLS:
+        if not shutil.which(tool):
+            missing.append(tool)
+    return missing
 
 def install_tools():
-    """Install required tools."""
+    """Install missing tools automatically."""
     setup_environment()
+    missing = check_requirements()
     
-    # Install Go tools
-    for tool, install_cmd in TOOLS.items():
-        if not check_binary(tool):
-            print(f"[*] Installing {tool}...")
-            if tool in ["dirsearch", "paramspider"]:
-                ret, _, err = run_command(install_cmd, True)
-            else:
-                ret, _, err = run_command(f"go install {install_cmd}", True)
+    if not missing:
+        print("[*] All tools are already installed")
+        return True
+        
+    print(f"[*] Installing missing tools: {', '.join(missing)}")
+    
+    for tool in missing:
+        print(f"[*] Installing {tool}...")
+        cmd = TOOLS[tool]["install"]
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print(f"[+] Successfully installed {tool}")
+        else:
+            print(f"[!] Failed to install {tool}: {result.stderr.strip()}")
+            return False
             
-            if ret == 0:
-                print(f"[+] {tool} installed successfully")
-            else:
-                print(f"[!] Failed to install {tool}: {err}")
+    return True
 
-def ensure_wordlist():
+def download_wordlist():
     """Download default wordlist if missing."""
-    os.makedirs(WORDLIST_DIR, exist_ok=True)
-    wordlist_path = os.path.join(WORDLIST_DIR, DEFAULT_WORDLIST_NAME)
-
-    if not os.path.isfile(wordlist_path) or os.path.getsize(wordlist_path) == 0:
+    os.makedirs("wordlists", exist_ok=True)
+    wordlist_path = os.path.join("wordlists", DEFAULT_WORDLIST)
+    
+    if not os.path.exists(wordlist_path):
         print("[*] Downloading wordlist...")
-        ret, _, err = run_command(f"wget {WORDLIST_URL} -O {wordlist_path}", True)
-        if ret != 0:
-            print(f"[!] Failed to download wordlist: {err}")
+        result = subprocess.run(f"wget {WORDLIST_URL} -O {wordlist_path}", 
+                              shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"[!] Wordlist download failed: {result.stderr.strip()}")
             return False
     return True
 
-async def run_recon_tool(tool_cmd, output_file):
-    """Run a recon tool and save output."""
-    ret, out, err = await run_async_command(tool_cmd)
-    if ret == 0 and out:
-        with open(output_file, "w") as f:
-            f.write(out + "\n")
-        print(f"[+] {tool_cmd.split()[0]} results saved to {output_file}")
-    elif err:
-        print(f"[!] {tool_cmd.split()[0]} error: {err}")
+async def run_tool(tool_name, target, output_file, input_file=None, wordlist=None):
+    """Execute a recon tool asynchronously."""
+    template = TOOLS[tool_name]["cmd"]
+    cmd = template.format(
+        target=target,
+        output=output_file,
+        input=input_file or "",
+        wordlist=wordlist or ""
+    )
+    
+    print(f"[*] Running {tool_name}...")
+    proc = await asyncio.create_subprocess_shell(
+        cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=TOOL_TIMEOUT)
+        
+        if proc.returncode != 0:
+            print(f"[!] {tool_name} failed: {stderr.decode().strip()}")
+            return False
+            
+        print(f"[+] {tool_name} completed successfully")
+        return True
+        
+    except asyncio.TimeoutError:
+        proc.kill()
+        print(f"[!] {tool_name} timed out")
+        return False
+
+async def run_recon(domain, url=None):
+    """Main reconnaissance workflow."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = os.path.join(OUTPUT_DIR, f"scan_{timestamp}")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    print(f"[*] Starting reconnaissance on {domain}")
+    print(f"[*] Results will be saved to: {output_dir}")
+    
+    # Subdomain discovery
+    subdomains_file = os.path.join(output_dir, "subdomains.txt")
+    await asyncio.gather(
+        run_tool("subfinder", domain, subdomains_file),
+        run_tool("assetfinder", domain, subdomains_file)
+    )
+    
+    # HTTP probing
+    httpx_file = os.path.join(output_dir, "httpx_results.json")
+    await run_tool("httpx", "", httpx_file, input_file=subdomains_file)
+    
+    # URL discovery
+    await asyncio.gather(
+        run_tool("gau", domain, os.path.join(output_dir, "urls_gau.txt")),
+        run_tool("waybackurls", domain, os.path.join(output_dir, "urls_wayback.txt")),
+        run_tool("paramspider", domain, os.path.join(output_dir, "paramspider_results.txt"))
+    )
+    
+    # Directory brute-forcing
+    if url:
+        if not url.startswith(('http://', 'https://')):
+            url = f"http://{url}"
+            
+        wordlist_path = os.path.join("wordlists", DEFAULT_WORDLIST)
+        await run_tool(
+            "dirsearch", 
+            url, 
+            os.path.join(output_dir, "dirsearch_results.txt"),
+            wordlist=wordlist_path
+        )
+    
+    print(f"[+] Reconnaissance completed. Results saved to {output_dir}")
 
 async def main():
-    parser = argparse.ArgumentParser(description='Enhanced Reconnaissance Toolkit')
-    parser.add_argument('domain', help='Target domain')
+    parser = argparse.ArgumentParser(description=f"Enhanced Reconnaissance Toolkit v{VERSION}")
+    parser.add_argument('domain', help='Target domain to scan')
     parser.add_argument('--url', help='Specific URL for directory scanning')
     parser.add_argument('--install', action='store_true', help='Install tools only')
     args = parser.parse_args()
 
+    # Handle Ctrl+C gracefully
+    signal.signal(signal.SIGINT, lambda s, f: (print("\n[!] Scan interrupted"), sys.exit(1)))
+    
     if args.install:
-        install_tools()
+        if not install_tools():
+            sys.exit(1)
         return
-
-    # Setup output directory
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = os.path.join(OUTPUT_DIR, f"scan_{timestamp}")
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Verify tools and wordlist
-    install_tools()
-    if not ensure_wordlist():
-        print("[!] Wordlist missing - directory scanning disabled")
-
-    # Run reconnaissance
-    try:
-        # Subdomain discovery
-        await asyncio.gather(
-            run_recon_tool(f"subfinder -d {args.domain} -silent", 
-                         os.path.join(output_dir, "subdomains.txt")),
-            run_recon_tool(f"assetfinder --subs-only {args.domain}", 
-                         os.path.join(output_dir, "assets.txt"))
-        )
-
-        # HTTP probing
-        await run_recon_tool(
-            f"httpx -l {os.path.join(output_dir, 'subdomains.txt')} -silent -json",
-            os.path.join(output_dir, "httpx_results.json")
-        )
-
-        # URL discovery
-        await asyncio.gather(
-            run_recon_tool(f"echo {args.domain} | gau", 
-                         os.path.join(output_dir, "urls_gau.txt")),
-            run_recon_tool(f"echo {args.domain} | waybackurls", 
-                         os.path.join(output_dir, "urls_wayback.txt"))
-        )
-
-        # Directory scanning (if URL provided)
-        if args.url:
-            url = args.url if args.url.startswith(('http://', 'https://')) else f"http://{args.url}"
-            await run_recon_tool(
-                f"dirsearch -u {url} -w {os.path.join(WORDLIST_DIR, DEFAULT_WORDLIST_NAME)}",
-                os.path.join(output_dir, "dirsearch_results.txt")
-            )
-
-        print(f"[+] Reconnaissance completed. Results saved to {output_dir}")
-
-    except Exception as e:
-        print(f"[!] Error during reconnaissance: {str(e)}")
+    
+    if not check_requirements():
+        print("[!] Missing required tools. Run with --install first")
+        sys.exit(1)
+        
+    if not download_wordlist():
+        print("[!] Wordlist download failed")
+        
+    await run_recon(args.domain, args.url)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n[!] Process interrupted by user")
-        sys.exit(1)
+    asyncio.run(main())

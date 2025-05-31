@@ -5,7 +5,7 @@ Filename    : recon_async.py
 Description : Cross-platform asynchronous reconnaissance script using asyncio and aiohttp
               - Checks and installs required tools (Go, Go tools, Python tools)
               - Runs multiple recon tools asynchronously
-              - Merges results and performs HTTP analysis
+              - Merges results and performs HTTP analysis (httpx CLI and aiohttp)
               - Supports scanning domain and optionally URL with directory brute forcing
 Usage       : python recon_async.py <target-domain> [--url <example-url>]
 """
@@ -55,6 +55,11 @@ def is_linux():
     return platform.system().lower().startswith("linux")
 
 def run_subprocess_sync(cmd, capture_output=False):
+    """
+    Run a shell command synchronously.
+    If capture_output=True, return (returncode, stdout, stderr).
+    Otherwise, return (returncode, None, None).
+    """
     try:
         if capture_output:
             proc = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -70,6 +75,9 @@ def check_binary(binary_name):
     return shutil.which(binary_name) is not None
 
 def append_go_bin_to_path():
+    """
+    Ensure that GOBIN or GOPATH/bin is in PATH after installing Go tools.
+    """
     gobin = os.environ.get("GOBIN")
     if gobin and os.path.isdir(gobin):
         if gobin not in os.environ.get("PATH", ""):
@@ -112,6 +120,9 @@ def install_go_windows():
     sys.exit(1)
 
 def ensure_go_installed():
+    """
+    Ensure 'go' binary is present. If not, attempt to install on Linux or Windows.
+    """
     if not check_binary("go"):
         print("[*] Go is not installed.")
         if is_linux():
@@ -126,6 +137,9 @@ def ensure_go_installed():
         append_go_bin_to_path()
 
 def install_go_tool(tool_name, go_path):
+    """
+    Install a Go-based tool via 'go install <path>@latest'.
+    """
     print(f"[*] Installing Go-based tool: {tool_name} ...")
     cmd = f"GO111MODULE=on go install {go_path}"
     ret, out, err = run_subprocess_sync(cmd, capture_output=True)
@@ -136,6 +150,9 @@ def install_go_tool(tool_name, go_path):
         print(f"[!] Failed to install {tool_name}: {err}")
 
 def install_python_tool(tool_name, package_name):
+    """
+    Install a Python-based tool via pip.
+    """
     print(f"[*] Installing Python-based tool: {tool_name} ...")
     pip_cmd = "pip" if check_binary("pip") else "pip3"
     cmd = f"{pip_cmd} install {package_name}"
@@ -146,6 +163,9 @@ def install_python_tool(tool_name, package_name):
         print(f"[!] Failed to install {tool_name}: {err}")
 
 def ensure_tools_installed():
+    """
+    Ensure Go is installed, then install each Go tool and Python tool if missing.
+    """
     ensure_go_installed()
 
     for binary, go_path in GO_TOOLS.items():
@@ -163,7 +183,10 @@ def ensure_tools_installed():
     print("[+] All required tools are installed or already present.")
 
 def write_domain_file(domain: str):
-    with open("domain.txt", "w") as f:
+    """
+    Write the target domain into 'domain.txt'.
+    """
+    with open("domain.txt", "w", encoding="utf-8") as f:
         f.write(domain + "\n")
     print(f"[+] domain.txt created with {domain}")
 
@@ -172,6 +195,10 @@ def write_domain_file(domain: str):
 # ----------------------------
 
 async def run_subprocess_async(cmd: str, outfile: str = None):
+    """
+    Run a shell command asynchronously.
+    If 'outfile' is provided, write stdout into that file; otherwise print stdout.
+    """
     print(f"[+] Running (async): {cmd}")
     process = await asyncio.create_subprocess_shell(
         cmd,
@@ -195,12 +222,21 @@ async def run_subprocess_async(cmd: str, outfile: str = None):
             print(out_text)
 
 async def recon_subfinder(domain: str):
+    """
+    Run 'subfinder' and save output to 'subfinder.txt'.
+    """
     await run_subprocess_async(f"subfinder -d {domain}", "subfinder.txt")
 
 async def recon_assetfinder(domain: str):
+    """
+    Run 'assetfinder' and save output to 'assetfinder.txt'.
+    """
     await run_subprocess_async(f"assetfinder {domain}", "assetfinder.txt")
 
 async def recon_merge_subs():
+    """
+    Merge 'subfinder.txt' and 'assetfinder.txt' into 'uniq_subs.txt' (deduplicated).
+    """
     if not (os.path.exists("subfinder.txt") and os.path.exists("assetfinder.txt")):
         print("[!] Cannot merge subs: subfinder.txt or assetfinder.txt missing.")
         return
@@ -216,7 +252,20 @@ async def recon_merge_subs():
             f.write(host + "\n")
     print("[+] Unique subdomains written to uniq_subs.txt")
 
+async def recon_httpx_cli():
+    """
+    Run 'httpx' CLI on 'uniq_subs.txt', save to 'httpx_cli.txt'.
+    """
+    if not os.path.exists("uniq_subs.txt"):
+        print("[!] uniq_subs.txt not found, skipping httpx CLI step.")
+        return
+    await run_subprocess_async("httpx -l uniq_subs.txt -o httpx_cli.txt", "httpx_cli.txt")
+
 async def recon_httpx_async():
+    """
+    Perform HTTP scanning (status, title, IP, server) on 'uniq_subs.txt' using aiohttp,
+    then write results to 'httpx_toolkit_async.csv'.
+    """
     infile = "uniq_subs.txt"
     outfile = "httpx_toolkit_async.csv"
     if not os.path.exists(infile):
@@ -229,11 +278,13 @@ async def recon_httpx_async():
     async def fetch_info(session: aiohttp.ClientSession, host: str):
         url = f"http://{host}"
         data = {"host": host, "status": None, "title": None, "server": None, "ip": None}
+        # DNS resolution
         try:
             ip_addr = socket.gethostbyname(host)
             data["ip"] = ip_addr
         except Exception:
             data["ip"] = "N/A"
+        # HTTP GET
         try:
             async with semaphore:
                 async with session.get(url, timeout=15, allow_redirects=True) as resp:
@@ -262,24 +313,40 @@ async def recon_httpx_async():
     print(f"[+] HTTP info collected in {outfile}")
 
 async def recon_gau(domain: str):
+    """
+    Run 'gau' (GetAllURLs) and save output to 'gau.txt'.
+    """
     await run_subprocess_async(f"gau {domain}", "gau.txt")
 
 async def recon_wayback(domain: str):
+    """
+    Run 'waybackurls' and save output to 'waybackurls.txt'.
+    """
     await run_subprocess_async(f"waybackurls {domain}", "waybackurls.txt")
 
 async def recon_paramspider(domain: str):
+    """
+    Run 'paramspider' and save output to 'paramspider.txt'.
+    """
     await run_subprocess_async(f"paramspider -d {domain} -o paramspider.txt", "paramspider.txt")
 
 async def recon_extract_urls(filename: str):
+    """
+    Extract URLs from a local file and print count (placeholder).
+    """
     if not os.path.exists(filename):
         print(f"[!] {filename} not found for URL extraction.")
         return
     with open(filename, "r", encoding="utf-8") as f:
         urls = set(line.strip() for line in f if line.strip())
     print(f"[+] Extracted {len(urls)} URLs from {filename}")
-    # Placeholder for URL processing if needed
+    # Placeholder for further URL processing
 
 async def recon_gobuster(url: str):
+    """
+    Run 'gobuster' directory brute-forcing on a given URL.
+    Save output to 'gobuster.txt'.
+    """
     wordlist = DEFAULT_WORDLIST_WINDOWS if is_windows() else DEFAULT_WORDLIST_LINUX
     if not os.path.exists(wordlist):
         print(f"[!] Wordlist not found at {wordlist}, skipping gobuster.")
@@ -288,6 +355,10 @@ async def recon_gobuster(url: str):
     await run_subprocess_async(cmd, "gobuster.txt")
 
 async def recon_dirsearch(url: str):
+    """
+    Run 'dirsearch' on a given URL.
+    Save output to 'dirsearch.txt'.
+    """
     cmd = f"dirsearch -u {url} -e * -t 50 -o dirsearch.txt"
     await run_subprocess_async(cmd, "dirsearch.txt")
 
@@ -310,11 +381,13 @@ async def main():
             print("[!] --url provided but no URL specified.")
             sys.exit(1)
 
-    # Install/check all tools before starting scans
+    # 1. Install/check all tools before starting scans
     ensure_tools_installed()
+
+    # 2. Write domain to file
     write_domain_file(domain)
 
-    # Run initial subdomain enumeration tools in parallel
+    # 3. Run initial subdomain enumeration & URL collection tools in parallel
     await asyncio.gather(
         recon_subfinder(domain),
         recon_assetfinder(domain),
@@ -323,13 +396,16 @@ async def main():
         recon_paramspider(domain),
     )
 
-    # Merge subdomains after subfinder and assetfinder complete
+    # 4. Merge subdomains after subfinder and assetfinder complete
     await recon_merge_subs()
 
-    # Run httpx scan asynchronously on merged subdomains
+    # 5. Run httpx CLI scan on merged subdomains
+    await recon_httpx_cli()
+
+    # 6. Run HTTP scan via aiohttp on merged subdomains
     await recon_httpx_async()
 
-    # Run URL-related scans if URL provided
+    # 7. Run URL-related scans if URL provided
     if url:
         await asyncio.gather(
             recon_gobuster(url),

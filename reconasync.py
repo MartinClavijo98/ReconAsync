@@ -24,7 +24,7 @@ from datetime import datetime
 
 # Global Configuration
 VERSION = "2.0.0"
-AUTHOR = "Your Name"
+AUTHOR = "AIGPTCODE"
 LICENSE = "MIT"
 
 # Tool Configuration

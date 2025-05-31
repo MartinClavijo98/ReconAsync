@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 Enhanced Linux Reconnaissance Automation Script
-- Better error handling
-- Proper tool path management
-- Clean process management
-- Progress feedback
+- Better error handling and ARM architecture support
+- Improved URL/domain handling
+- Graceful recovery from interruptions
+- Progress tracking
 """
 
 import os
@@ -13,8 +13,10 @@ import sys
 import subprocess
 import shutil
 import signal
+import platform
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from urllib.parse import urlparse
 
 # ----------------------------
 #      Configuration
@@ -69,6 +71,10 @@ def setup_environment():
     if go_bin_path not in os.environ["PATH"]:
         os.environ["PATH"] = f"{go_bin_path}:{os.environ['PATH']}"
 
+def is_arm_architecture():
+    """Check if running on ARM architecture"""
+    return platform.machine().lower() in ('arm', 'arm64', 'aarch64')
+
 def check_installed(tool):
     """Check if a tool is installed and in PATH"""
     return shutil.which(tool) is not None
@@ -94,15 +100,26 @@ def run_command(cmd, timeout=PROCESS_TIMEOUT, cwd=None):
         return None, str(e), -1
 
 def install_go():
-    """Install Go on Linux"""
+    """Install Go on Linux with ARM support"""
     print_status("Installing Go...")
-    stdout, stderr, retcode = run_command("sudo apt-get update -y")
-    if retcode != 0:
-        print_error("Failed to update package lists")
-        return False
     
-    stdout, stderr, retcode = run_command("sudo apt-get install -y golang-go")
+    if is_arm_architecture():
+        print_status("ARM architecture detected - installing Go for ARM")
+        install_cmd = """
+        wget https://golang.org/dl/go1.20.linux-arm64.tar.gz
+        sudo tar -C /usr/local -xzf go1.20.linux-arm64.tar.gz
+        rm go1.20.linux-arm64.tar.gz
+        """
+    else:
+        install_cmd = "sudo apt-get update && sudo apt-get install -y golang-go"
+    
+    stdout, stderr, retcode = run_command(install_cmd)
     if retcode == 0:
+        # Add Go to PATH
+        with open(os.path.expanduser("~/.bashrc"), "a") as f:
+            f.write('\nexport PATH=$PATH:/usr/local/go/bin\nexport GOPATH=$HOME/go\n')
+        os.environ["PATH"] += ":/usr/local/go/bin"
+        os.environ["GOPATH"] = os.path.expanduser("~/go")
         print_success("Go installed successfully")
         return True
     else:
@@ -110,10 +127,15 @@ def install_go():
         return False
 
 def install_go_tool(name, path):
-    """Install a Go tool"""
+    """Install a Go tool with ARM support"""
     print_status(f"Installing {name}...")
+    
+    env = os.environ.copy()
+    if is_arm_architecture():
+        env["GOARCH"] = "arm64"
+    
     cmd = f"go install {path}"
-    stdout, stderr, retcode = run_command(cmd)
+    stdout, stderr, retcode = run_command(cmd, env=env)
     
     if retcode == 0:
         print_success(f"{name} installed successfully")
@@ -148,20 +170,34 @@ def ensure_tools():
     # Install Go tools
     for tool, path in GO_TOOLS.items():
         if not check_installed(tool):
-            install_go_tool(tool, path)
+            if not install_go_tool(tool, path):
+                print_error(f"Skipping {tool} as installation failed")
+                GO_TOOLS.pop(tool)  # Remove from tools to use
     
     # Install Python tools
     for tool, package in PYPI_TOOLS.items():
         if not check_installed(tool):
-            install_python_tool(tool, package)
+            if not install_python_tool(tool, package):
+                print_error(f"Skipping {tool} as installation failed")
+                PYPI_TOOLS.pop(tool)  # Remove from tools to use
     
-    print_success("All tools verified")
+    print_success("Tool verification complete")
+
+def extract_domain(url):
+    """Extract domain from URL"""
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.netloc:
+        return parsed.netloc
+    return url.split('/')[0]
 
 def write_file(filename, content):
     """Write content to file with error handling"""
     try:
         with open(filename, 'w') as f:
-            f.write(content + "\n")
+            if isinstance(content, str):
+                f.write(content + "\n")
+            else:
+                f.writelines(line + "\n" for line in content if line.strip())
         return True
     except IOError as e:
         print_error(f"Failed to write {filename}: {str(e)}")
@@ -187,6 +223,7 @@ def run_subfinder(domain):
         if write_file(output_file, stdout):
             print_success(f"Subfinder results saved to {output_file}")
             return True
+    print_error(f"Subfinder failed: {stderr}")
     return False
 
 def run_assetfinder(domain):
@@ -200,27 +237,34 @@ def run_assetfinder(domain):
         if write_file(output_file, stdout):
             print_success(f"Assetfinder results saved to {output_file}")
             return True
+    print_error(f"Assetfinder failed: {stderr}")
     return False
 
 def merge_subdomains():
     """Merge and deduplicate subdomain lists"""
-    input_files = ["subfinder.txt", "assetfinder.txt"]
+    input_files = [f for f in ["subfinder.txt", "assetfinder.txt"] if Path(f).is_file()]
+    
+    if not input_files:
+        print_error("No subdomain files found to merge")
+        return False
+    
     output_file = "uniq_subs.txt"
-    
-    # Check if input files exist
-    for f in input_files:
-        if not Path(f).is_file():
-            print_error(f"Missing input file: {f}")
-            return False
-    
     print_status("Merging subdomain lists")
-    cmd = f"cat {' '.join(input_files)} | sort -u"
-    stdout, stderr, retcode = run_command(cmd)
     
-    if stdout and retcode == 0:
-        if write_file(output_file, stdout):
-            print_success(f"Merged subdomains saved to {output_file}")
-            return True
+    try:
+        # Read all lines from all files
+        subdomains = set()
+        for f in input_files:
+            with open(f) as infile:
+                subdomains.update(line.strip() for line in infile if line.strip())
+        
+        if subdomains:
+            if write_file(output_file, sorted(subdomains)):
+                print_success(f"Merged {len(subdomains)} subdomains to {output_file}")
+                return True
+    except Exception as e:
+        print_error(f"Failed to merge subdomains: {str(e)}")
+    
     return False
 
 def run_httpx():
@@ -251,9 +295,10 @@ def run_waybackurls(domain):
     
     stdout, stderr, retcode = run_command(cmd)
     if stdout and retcode == 0:
-        if write_file(output_file, stdout):
+        if write_file(output_file, stdout.splitlines()):
             print_success(f"Waybackurls results saved to {output_file}")
             return True
+    print_error(f"Waybackurls failed: {stderr}")
     return False
 
 def run_gau(domain):
@@ -264,22 +309,23 @@ def run_gau(domain):
     
     stdout, stderr, retcode = run_command(cmd)
     if stdout and retcode == 0:
-        if write_file(output_file, stdout):
+        if write_file(output_file, stdout.splitlines()):
             print_success(f"GAU results saved to {output_file}")
             return True
+    print_error(f"GAU failed: {stderr}")
     return False
 
 def run_paramspider(domain):
-    """Run paramspider on domain"""
+    """Run paramspider on domain with timeout handling"""
     output_file = "paramspider.txt"
-    cmd = f"paramspider -d {domain} > {output_file}"
+    cmd = f"paramspider -d {domain} -o {output_file}"
     print_status(f"Running paramspider on {domain}")
     
-    _, stderr, retcode = run_command(cmd)
-    if retcode == 0:
-        if Path(output_file).is_file():
-            print_success(f"Paramspider results saved to {output_file}")
-            return True
+    _, stderr, retcode = run_command(cmd, timeout=900)  # 15 minute timeout
+    
+    if retcode == 0 and Path(output_file).is_file():
+        print_success(f"Paramspider results saved to {output_file}")
+        return True
     print_error(f"Paramspider failed: {stderr}")
     return False
 
@@ -323,10 +369,11 @@ def main():
     
     # Check arguments
     if len(sys.argv) < 2:
-        print("Usage: python recon.py <target-domain> [--url <target-url>]")
+        print("Usage: python recon.py <target-domain-or-url> [--url <target-url>]")
         sys.exit(1)
     
-    domain = sys.argv[1]
+    target = sys.argv[1]
+    domain = extract_domain(target)
     url = None
     
     # Parse optional URL argument
@@ -346,13 +393,19 @@ def main():
     
     # Run recon tasks in parallel where possible
     with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {
-            executor.submit(run_subfinder, domain): "subfinder",
-            executor.submit(run_assetfinder, domain): "assetfinder",
-            executor.submit(run_gau, domain): "gau",
-            executor.submit(run_waybackurls, domain): "waybackurls",
-            executor.submit(run_paramspider, domain): "paramspider"
-        }
+        futures = {}
+        
+        # Only add tools that were successfully installed
+        if "subfinder" in GO_TOOLS:
+            futures[executor.submit(run_subfinder, domain)] = "subfinder"
+        if "assetfinder" in GO_TOOLS:
+            futures[executor.submit(run_assetfinder, domain)] = "assetfinder"
+        if "gau" in GO_TOOLS:
+            futures[executor.submit(run_gau, domain)] = "gau"
+        if "waybackurls" in GO_TOOLS:
+            futures[executor.submit(run_waybackurls, domain)] = "waybackurls"
+        if "paramspider" in GO_TOOLS:
+            futures[executor.submit(run_paramspider, domain)] = "paramspider"
         
         # Wait for parallel tasks to complete
         for future in as_completed(futures):
@@ -367,13 +420,15 @@ def main():
     # Run sequential tasks that depend on previous results
     if not merge_subdomains():
         print_error("Failed to merge subdomains, skipping httpx")
-    else:
+    elif "httpx" in GO_TOOLS:
         run_httpx()
     
     # Run URL-based tools if URL provided
     if url:
-        run_gobuster(url)
-        run_dirsearch(url)
+        if "gobuster" in GO_TOOLS:
+            run_gobuster(url)
+        if "dirsearch" in PYPI_TOOLS:
+            run_dirsearch(url)
     
     print_success("Reconnaissance completed")
 

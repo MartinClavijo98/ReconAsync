@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Enhanced Reconnaissance Toolkit (ERT)
-A comprehensive asynchronous reconnaissance tool with automatic dependency management
-Version: 2.0.0
+Enhanced Reconnaissance Toolkit (ERT) - Robust File Handling Edition
+Version: 2.1.0
 """
 
 import os
@@ -23,7 +22,7 @@ from urllib.parse import urlparse
 from datetime import datetime
 
 # Global Configuration
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 AUTHOR = "AIGPTCODE"
 LICENSE = "MIT"
 
@@ -94,6 +93,49 @@ class Color:
     RESET = '\033[0m'
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
+
+### Enhanced File Handling Functions ###
+
+def write_file_safe(filepath: str, content: str, mode: str = "w") -> bool:
+    """Safely write content to a file with proper error handling"""
+    try:
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        
+        # Write to temp file first
+        temp_path = f"{filepath}.tmp"
+        with open(temp_path, mode, encoding="utf-8", errors="replace") as f:
+            f.write(content)
+        
+        # Atomic rename
+        if os.path.exists(filepath):
+            os.unlink(filepath)
+        os.rename(temp_path, filepath)
+        return True
+    except Exception as e:
+        print(f"{Color.RED}[!] Failed to write {filepath}: {str(e)}{Color.RESET}")
+        # Clean up temp file if it exists
+        if os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+        return False
+
+def append_file_safe(filepath: str, content: str) -> bool:
+    """Safely append content to a file"""
+    return write_file_safe(filepath, content, mode="a")
+
+def read_file_safe(filepath: str) -> str:
+    """Safely read content from a file"""
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except Exception as e:
+        print(f"{Color.RED}[!] Failed to read {filepath}: {str(e)}{Color.RESET}")
+        return ""
+
+### Core Functions with Enhanced File Handling ###
 
 def print_banner():
     """Display the tool banner"""
@@ -190,7 +232,7 @@ def install_python_tool(tool_name, package_info):
         return False
 
 def install_paramspider():
-    """Install paramspider by cloning its GitHub repository and running setup.py."""
+    """Install paramspider with enhanced error handling."""
     print(f"{Color.BLUE}[*] Installing Python tool: paramspider...{Color.RESET}")
     if check_binary("paramspider"):
         print(f"{Color.GREEN}[+] paramspider is already installed.{Color.RESET}")
@@ -239,7 +281,7 @@ def install_paramspider():
             pass
 
 def install_go_tool(tool_name, go_info):
-    """Install Go tools with proper error handling."""
+    """Install Go tools with enhanced error handling."""
     print(f"{Color.BLUE}[*] Installing Go tool: {tool_name}...{Color.RESET}")
 
     if not check_binary("go"):
@@ -268,7 +310,7 @@ def install_system_dependencies():
         run_subprocess_sync("choco install git golang python -y")
 
 def ensure_wordlist():
-    """Ensure the wordlist is available before starting reconnaissance."""
+    """Ensure the wordlist is available with enhanced file handling."""
     os.makedirs(WORDLIST_DIR, exist_ok=True)
     wordlist_path = os.path.join(WORDLIST_DIR, DEFAULT_WORDLIST_NAME)
 
@@ -278,19 +320,23 @@ def ensure_wordlist():
 
     print(f"{Color.BLUE}[*] Wordlist not found, attempting to download...{Color.RESET}")
     try:
-        ret, out, err = run_subprocess_sync(f"wget {WORDLIST_URL} -O {wordlist_path}")
-        if ret == 0 and os.path.getsize(wordlist_path) > 0:
+        temp_path = f"{wordlist_path}.tmp"
+        ret, out, err = run_subprocess_sync(f"wget {WORDLIST_URL} -O {temp_path}")
+        if ret == 0 and os.path.getsize(temp_path) > 0:
+            os.rename(temp_path, wordlist_path)
             print(f"{Color.GREEN}[+] Successfully downloaded wordlist to {wordlist_path}{Color.RESET}")
             return True
         else:
             print(f"{Color.RED}[!] Failed to download wordlist: {err}{Color.RESET}")
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
             return False
     except Exception as e:
         print(f"{Color.RED}[!] Exception while downloading wordlist: {str(e)}{Color.RESET}")
         return False
 
 def ensure_tools_installed():
-    """Ensure all required tools are installed (Go, Python, paramspider)."""
+    """Ensure all required tools are installed with enhanced checks."""
     setup_environment()
     install_system_dependencies()
 
@@ -322,8 +368,10 @@ def ensure_tools_installed():
 
     print(f"{Color.GREEN}[+] Tool installation verification complete.{Color.RESET}")
 
+### Enhanced Recon Functions ###
+
 async def run_subprocess_async(cmd: str, outfile: str = None, timeout: int = TOOL_TIMEOUT):
-    """Run a shell command asynchronously and optionally save output."""
+    """Run a shell command asynchronously with enhanced output handling."""
     print(f"{Color.CYAN}[+] Running (async): {cmd}{Color.RESET}")
     
     try:
@@ -340,56 +388,65 @@ async def run_subprocess_async(cmd: str, outfile: str = None, timeout: int = TOO
             await process.communicate()
             raise
             
-        out_text = stdout.decode().strip() if stdout else ""
-        err_text = stderr.decode().strip() if stderr else ""
+        out_text = stdout.decode("utf-8", errors="replace").strip() if stdout else ""
+        err_text = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
 
         if process.returncode != 0:
             print(f"{Color.RED}[!] Command failed (rc={process.returncode}): {cmd}{Color.RESET}")
             if err_text:
                 print(f"{Color.RED}    Error: {err_text}{Color.RESET}")
+            if outfile:
+                write_file_safe(outfile, f"Command failed:\n{cmd}\nError: {err_text}")
         else:
             if outfile and out_text:
-                with open(outfile, "w", encoding="utf-8") as f:
-                    f.write(out_text + "\n")
-                print(f"{Color.GREEN}[+] Output saved to: {outfile}{Color.RESET}")
+                if not write_file_safe(outfile, out_text):
+                    print(f"{Color.RED}[!] Failed to save output to {outfile}{Color.RESET}")
             elif out_text:
                 print(out_text)
                 
     except Exception as e:
         print(f"{Color.RED}[!] Exception while running command: {str(e)}{Color.RESET}")
+        if outfile:
+            write_file_safe(outfile, f"Command error:\n{cmd}\nException: {str(e)}")
         raise
 
 async def recon_subfinder(domain: str, output_dir: str):
-    """Run subfinder asynchronously and save results."""
+    """Run subfinder with enhanced output handling."""
     output_file = os.path.join(output_dir, "subfinder.txt")
-    await run_subprocess_async(f"subfinder -d {domain} -o {output_file}")
+    await run_subprocess_async(f"subfinder -d {domain} -o {output_file}.tmp")
+    if os.path.exists(f"{output_file}.tmp"):
+        os.rename(f"{output_file}.tmp", output_file)
 
 async def recon_assetfinder(domain: str, output_dir: str):
-    """Run assetfinder asynchronously and save results."""
+    """Run assetfinder with enhanced output handling."""
     output_file = os.path.join(output_dir, "assetfinder.txt")
-    await run_subprocess_async(f"assetfinder --subs-only {domain} > {output_file}")
+    await run_subprocess_async(f"assetfinder --subs-only {domain} > {output_file}.tmp")
+    if os.path.exists(f"{output_file}.tmp"):
+        os.rename(f"{output_file}.tmp", output_file)
 
 async def merge_files(input_files, output_file):
-    """Merge multiple files into one with unique entries."""
+    """Merge multiple files with enhanced error handling."""
     unique_lines = set()
     for input_file in input_files:
-        if os.path.exists(input_file):
-            with open(input_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        unique_lines.add(line)
+        try:
+            if os.path.exists(input_file):
+                with open(input_file, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            unique_lines.add(line)
+        except Exception as e:
+            print(f"{Color.RED}[!] Error reading {input_file}: {str(e)}{Color.RESET}")
     
     if unique_lines:
-        with open(output_file, "w", encoding="utf-8") as f:
-            for line in sorted(unique_lines):
-                f.write(line + "\n")
-        print(f"{Color.GREEN}[+] Merged results written to {output_file}{Color.RESET}")
+        content = "\n".join(sorted(unique_lines)) + "\n"
+        if not write_file_safe(output_file, content):
+            print(f"{Color.RED}[!] Failed to save merged results to {output_file}{Color.RESET}")
     else:
         print(f"{Color.YELLOW}[!] No data to merge for {output_file}{Color.RESET}")
 
 async def recon_httpx_cli(output_dir: str):
-    """Run httpx in CLI mode on unique subdomains."""
+    """Run httpx in CLI mode with enhanced output handling."""
     input_file = os.path.join(output_dir, "uniq_subs.txt")
     output_file = os.path.join(output_dir, "httpx_cli.txt")
     
@@ -397,28 +454,28 @@ async def recon_httpx_cli(output_dir: str):
         print(f"{Color.RED}[!] {input_file} not found, skipping httpx CLI step.{Color.RESET}")
         return
 
-    with open(input_file, "r", encoding="utf-8") as f:
+    with open(input_file, "r", encoding="utf-8", errors="replace") as f:
         hosts = [line.strip() for line in f if line.strip()]
 
-    with open(output_file, "w", encoding="utf-8") as out_f:
-        for i in range(0, len(hosts), BATCH_SIZE):
-            batch = hosts[i:i + BATCH_SIZE]
-            batch_input = "\n".join([f"http://{host}" for host in batch])
-            
-            cmd = f"echo '{batch_input}' | httpx -silent"
-            ret, out, err = run_subprocess_sync(cmd, capture_output=True)
-            
-            if ret == 0 and out:
-                for line in out.splitlines():
-                    if line.strip():
-                        out_f.write(line.strip() + "\n")
-            elif err:
-                out_f.write(f"Error processing batch {i//BATCH_SIZE + 1}: {err}\n")
+    results = []
+    for i in range(0, len(hosts), BATCH_SIZE):
+        batch = hosts[i:i + BATCH_SIZE]
+        batch_input = "\n".join([f"http://{host}" for host in batch])
+        
+        cmd = f"echo '{batch_input}' | httpx -silent"
+        ret, out, err = run_subprocess_sync(cmd, capture_output=True)
+        
+        if ret == 0 and out:
+            results.extend(line.strip() for line in out.splitlines() if line.strip())
+        elif err:
+            results.append(f"Error processing batch {i//BATCH_SIZE + 1}: {err}")
 
-    print(f"{Color.GREEN}[+] httpx CLI scan saved to {output_file}{Color.RESET}")
+    if results:
+        if not write_file_safe(output_file, "\n".join(results) + "\n"):
+            print(f"{Color.RED}[!] Failed to save httpx CLI results{Color.RESET}")
 
 async def recon_httpx_async(output_dir: str):
-    """Run httpx asynchronously with detailed information."""
+    """Run httpx asynchronously with enhanced CSV output."""
     input_file = os.path.join(output_dir, "uniq_subs.txt")
     output_file = os.path.join(output_dir, "httpx_async.csv")
     
@@ -426,10 +483,11 @@ async def recon_httpx_async(output_dir: str):
         print(f"{Color.RED}[!] {input_file} not found, skipping httpx async step.{Color.RESET}")
         return
 
-    with open(input_file, "r", encoding="utf-8") as f:
+    with open(input_file, "r", encoding="utf-8", errors="replace") as f:
         hosts = [line.strip() for line in f if line.strip()]
 
-    with open(output_file, "w", newline="", encoding="utf-8") as csvfile:
+    temp_file = f"{output_file}.tmp"
+    with open(temp_file, "w", newline="", encoding="utf-8") as csvfile:
         fieldnames = ["host", "status", "title", "ip", "server", "error"]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
@@ -463,28 +521,36 @@ async def recon_httpx_async(output_dir: str):
 
             writer.writerow(result)
 
-    print(f"{Color.GREEN}[+] httpx async scan saved to {output_file}{Color.RESET}")
+    if os.path.exists(temp_file):
+        os.rename(temp_file, output_file)
+        print(f"{Color.GREEN}[+] httpx async scan saved to {output_file}{Color.RESET}")
 
 async def recon_gau(domain: str, output_dir: str):
-    """Run gau to fetch URLs."""
+    """Run gau with enhanced output handling."""
     output_file = os.path.join(output_dir, "gau.txt")
-    await run_subprocess_async(f"echo {domain} | gau > {output_file}")
+    await run_subprocess_async(f"echo {domain} | gau > {output_file}.tmp")
+    if os.path.exists(f"{output_file}.tmp"):
+        os.rename(f"{output_file}.tmp", output_file)
 
 async def recon_waybackurls(domain: str, output_dir: str):
-    """Run waybackurls."""
+    """Run waybackurls with enhanced output handling."""
     output_file = os.path.join(output_dir, "waybackurls.txt")
-    await run_subprocess_async(f"echo {domain} | waybackurls > {output_file}")
+    await run_subprocess_async(f"echo {domain} | waybackurls > {output_file}.tmp")
+    if os.path.exists(f"{output_file}.tmp"):
+        os.rename(f"{output_file}.tmp", output_file)
 
 async def recon_paramspider(domain: str, output_dir: str):
-    """Run paramspider."""
+    """Run paramspider with enhanced output handling."""
     output_file = os.path.join(output_dir, "paramspider.txt")
     if not check_binary("paramspider"):
         print(f"{Color.RED}[!] paramspider binary not found, skipping.{Color.RESET}")
         return
-    await run_subprocess_async(f"paramspider -d {domain} > {output_file}")
+    await run_subprocess_async(f"paramspider -d {domain} > {output_file}.tmp")
+    if os.path.exists(f"{output_file}.tmp"):
+        os.rename(f"{output_file}.tmp", output_file)
 
 async def recon_dirsearch(url: str, output_dir: str):
-    """Run dirsearch on a provided URL."""
+    """Run dirsearch with enhanced output handling."""
     if not url:
         print(f"{Color.YELLOW}[!] URL not provided, skipping dirsearch.{Color.RESET}")
         return
@@ -499,9 +565,11 @@ async def recon_dirsearch(url: str, output_dir: str):
         f"dirsearch -u {url} "
         f"-e php,asp,aspx,jsp,html,js,json "
         f"-w {wordlist_path} "
-        f"--plain-text-report={output_file}"
+        f"--plain-text-report={output_file}.tmp"
     )
     await run_subprocess_async(dirsearch_cmd)
+    if os.path.exists(f"{output_file}.tmp"):
+        os.rename(f"{output_file}.tmp", output_file)
 
 async def main():
     print_banner()
@@ -563,9 +631,8 @@ async def main():
 
     # Write domain file
     domain_file = os.path.join(output_dir, "domain.txt")
-    with open(domain_file, "w", encoding="utf-8") as f:
-        f.write(domain + "\n")
-    print(f"{Color.GREEN}[+] Domain file created: {domain_file}{Color.RESET}")
+    if not write_file_safe(domain_file, domain + "\n"):
+        print(f"{Color.RED}[!] Failed to create domain file{Color.RESET}")
 
     # Start reconnaissance tasks
     start_time = time.time()

@@ -484,10 +484,14 @@ async def recon_paramspider(domain: str, output_dir: str):
     await run_subprocess_async(f"paramspider -d {domain} > {output_file}")
 
 async def recon_dirsearch(url: str, output_dir: str):
-    """Run dirsearch on a provided URL."""
+    """Run dirsearch on a provided URL with fixed command syntax."""
     if not url:
         print(f"{Color.YELLOW}[!] URL not provided, skipping dirsearch.{Color.RESET}")
         return
+
+    # Ensure URL has proper scheme
+    if not url.startswith(('http://', 'https://')):
+        url = f"http://{url}"
 
     wordlist_path = os.path.join(WORDLIST_DIR, DEFAULT_WORDLIST_NAME)
     if not os.path.isfile(wordlist_path) or os.path.getsize(wordlist_path) == 0:
@@ -499,9 +503,22 @@ async def recon_dirsearch(url: str, output_dir: str):
         f"dirsearch -u {url} "
         f"-e php,asp,aspx,jsp,html,js,json "
         f"-w {wordlist_path} "
-        f"--plain-text-report={output_file}"
+        f"-o {output_file}"  # Changed from --plain-text-report to -o
     )
     await run_subprocess_async(dirsearch_cmd)
+
+def main():
+    print_banner()
+    
+    # Handle SIGINT (Ctrl+C) properly
+    import signal
+    signal.signal(signal.SIGINT, lambda s, f: sys.exit(1))
+    
+    parser = argparse.ArgumentParser(
+        description='Enhanced Reconnaissance Toolkit (ERT) - Comprehensive security reconnaissance tool',
+        epilog=f"Example: python3 {sys.argv[0]} example.com --url http://example.com"
+    )
+
 
 async def main():
     print_banner()

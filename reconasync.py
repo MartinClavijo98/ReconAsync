@@ -1,411 +1,381 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Filename    : recon.py
-Description : Cross-platform reconnaissance automation script
-              - Checks for required tools, installs if missing
-              - Runs recon commands in parallel
-Usage       : python recon.py <target-domain> [--url <example-url>]
+Enhanced Linux Reconnaissance Automation Script
+- Better error handling
+- Proper tool path management
+- Clean process management
+- Progress feedback
 """
 
 import os
 import sys
 import subprocess
 import shutil
-import platform
+import signal
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 # ----------------------------
-#      Global Variables
+#      Configuration
 # ----------------------------
 
-# List of Go-based tools with their Go install paths
+# Go tools with installation paths
 GO_TOOLS = {
-    "subfinder":        "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
-    "assetfinder":      "github.com/tomnomnom/assetfinder@latest",
-    "httpx":            "github.com/projectdiscovery/httpx/cmd/httpx@latest",
-    "gobuster":         "github.com/OJ/gobuster/v3@latest",
-    "paramspider":      "github.com/devanshbatham/ParamSpider@latest",
-    "gau":              "github.com/lc/gau/v2/cmd/gau@latest",
-    "waybackurls":      "github.com/tomnomnom/waybackurls@latest"
+    "subfinder": "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
+    "assetfinder": "github.com/tomnomnom/assetfinder@latest",
+    "httpx": "github.com/projectdiscovery/httpx/cmd/httpx@latest",
+    "gobuster": "github.com/OJ/gobuster/v3@latest",
+    "paramspider": "github.com/devanshbatham/ParamSpider@latest",
+    "gau": "github.com/lc/gau/v2/cmd/gau@latest",
+    "waybackurls": "github.com/tomnomnom/waybackurls@latest"
 }
 
-# Python-based tools (name -> pip package)
+# Python tools
 PYPI_TOOLS = {
-    "dirsearch":        "dirsearch"
+    "dirsearch": "dirsearch"
 }
 
+# Wordlist for directory brute-forcing
+WORDLIST = "/usr/share/wordlists/dirbuster/directory-list-lowercase-2.3-medium.txt"
+
+# Timeout for subprocesses (seconds)
+PROCESS_TIMEOUT = 1800  # 30 minutes
+
 # ----------------------------
-#        Helper Functions
+#      Helper Functions
 # ----------------------------
 
-def is_windows():
-    """Return True if running on Windows."""
-    return platform.system().lower().startswith("win")
+def print_status(message):
+    """Print status messages with consistent formatting"""
+    print(f"[*] {message}")
 
-def is_linux():
-    """Return True if running on Linux."""
-    return platform.system().lower().startswith("linux")
+def print_success(message):
+    """Print success messages"""
+    print(f"[+] {message}")
 
-def run_subprocess(cmd, capture_output=False):
-    """
-    Run a shell command. 
-    If capture_output is True, return (stdout, stderr), else return (returncode, None).
-    """
+def print_error(message):
+    """Print error messages to stderr"""
+    print(f"[!] {message}", file=sys.stderr)
+
+def get_go_bin_path():
+    """Get the Go binary path"""
+    go_path = os.path.join(os.environ.get("GOPATH", os.path.expanduser("~/go")), "bin")
+    return go_path
+
+def setup_environment():
+    """Set up PATH environment to include Go binaries"""
+    go_bin_path = get_go_bin_path()
+    if go_bin_path not in os.environ["PATH"]:
+        os.environ["PATH"] = f"{go_bin_path}:{os.environ['PATH']}"
+
+def check_installed(tool):
+    """Check if a tool is installed and in PATH"""
+    return shutil.which(tool) is not None
+
+def run_command(cmd, timeout=PROCESS_TIMEOUT, cwd=None):
+    """Run a command with timeout and proper error handling"""
     try:
-        if capture_output:
-            proc = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            return proc.stdout.strip(), proc.stderr.strip()
-        else:
-            ret = subprocess.call(cmd, shell=True)
-            return ret, None
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            cwd=cwd
+        )
+        return result.stdout.strip(), result.stderr.strip(), result.returncode
+    except subprocess.TimeoutExpired:
+        print_error(f"Command timed out: {cmd}")
+        return None, "Command timed out", -1
     except Exception as e:
-        print(f"[!] Exception while running '{cmd}': {e}")
-        return -1, str(e)
+        print_error(f"Error running command: {cmd}\n{str(e)}")
+        return None, str(e), -1
 
-def check_binary(binary_name):
-    """
-    Check if a binary exists in PATH.
-    Return True if found, False otherwise.
-    """
-    return shutil.which(binary_name) is not None
-
-def install_go_linux():
-    """
-    Attempt to install Go on Linux via apt-get.
-    """
-    print("[*] Installing Go (golang-go) via apt-get...")
-    run_subprocess("sudo apt-get update -y")
-    code, err = run_subprocess("sudo apt-get install -y golang-go", capture_output=True)
-    if code == 0:
-        print("[+] Go installed successfully.")
+def install_go():
+    """Install Go on Linux"""
+    print_status("Installing Go...")
+    stdout, stderr, retcode = run_command("sudo apt-get update -y")
+    if retcode != 0:
+        print_error("Failed to update package lists")
+        return False
+    
+    stdout, stderr, retcode = run_command("sudo apt-get install -y golang-go")
+    if retcode == 0:
+        print_success("Go installed successfully")
+        return True
     else:
-        print(f"[!] Failed to install Go: {err}")
-        sys.exit(1)
+        print_error(f"Failed to install Go: {stderr}")
+        return False
 
-def install_go_windows():
-    """
-    Attempt to install Go on Windows via choco or winget.
-    """
-    print("[*] Installing Go on Windows via choco or winget...")
-    if check_binary("choco"):
-        ret, err = run_subprocess("choco install golang -y", capture_output=True)
-        if ret == 0:
-            print("[+] Go installed successfully via choco.")
-            return
-    if check_binary("winget"):
-        ret, err = run_subprocess("winget install --id Go.Go -e --source winget", capture_output=True)
-        if ret == 0:
-            print("[+] Go installed successfully via winget.")
-            return
-    print("[!] Could not install Go automatically. Please install Go manually and re-run.")
+def install_go_tool(name, path):
+    """Install a Go tool"""
+    print_status(f"Installing {name}...")
+    cmd = f"go install {path}"
+    stdout, stderr, retcode = run_command(cmd)
+    
+    if retcode == 0:
+        print_success(f"{name} installed successfully")
+        return True
+    else:
+        print_error(f"Failed to install {name}: {stderr}")
+        return False
+
+def install_python_tool(name, package):
+    """Install a Python tool via pip"""
+    print_status(f"Installing {name}...")
+    pip = "pip3" if shutil.which("pip3") else "pip"
+    cmd = f"{pip} install {package}"
+    stdout, stderr, retcode = run_command(cmd)
+    
+    if retcode == 0:
+        print_success(f"{name} installed successfully")
+        return True
+    else:
+        print_error(f"Failed to install {name}: {stderr}")
+        return False
+
+def ensure_tools():
+    """Ensure all required tools are installed"""
+    setup_environment()
+    
+    # Check Go installation
+    if not check_installed("go"):
+        if not install_go():
+            sys.exit(1)
+    
+    # Install Go tools
+    for tool, path in GO_TOOLS.items():
+        if not check_installed(tool):
+            install_go_tool(tool, path)
+    
+    # Install Python tools
+    for tool, package in PYPI_TOOLS.items():
+        if not check_installed(tool):
+            install_python_tool(tool, package)
+    
+    print_success("All tools verified")
+
+def write_file(filename, content):
+    """Write content to file with error handling"""
+    try:
+        with open(filename, 'w') as f:
+            f.write(content + "\n")
+        return True
+    except IOError as e:
+        print_error(f"Failed to write {filename}: {str(e)}")
+        return False
+
+def handle_interrupt(signum, frame):
+    """Handle keyboard interrupt"""
+    print_error("\nReceived interrupt signal. Cleaning up...")
     sys.exit(1)
 
-def ensure_go_installed():
-    """
-    Ensure that 'go' binary exists. If not, attempt automatic installation.
-    """
-    if not check_binary("go"):
-        print("[*] Go is not installed.")
-        if is_linux():
-            install_go_linux()
-        elif is_windows():
-            install_go_windows()
-        else:
-            print("[!] Unsupported OS. Install Go manually.")
-            sys.exit(1)
-    else:
-        print("[+] Go is already installed.")
-
-def install_go_tool(tool_name, go_path):
-    """
-    Install a Go-based tool via `go install ...@latest`.
-    """
-    print(f"[*] Installing Go-based tool: {tool_name} ...")
-    cmd = f"go install {go_path}"
-    ret, err = run_subprocess(cmd, capture_output=True)
-    if ret == 0:
-        print(f"[+] {tool_name} installed successfully.")
-    else:
-        print(f"[!] Failed to install {tool_name}: {err}")
-
-def install_python_tool(tool_name, package_name):
-    """
-    Install a Python-based tool via pip.
-    """
-    print(f"[*] Installing Python-based tool: {tool_name} ...")
-    pip_cmd = "pip" if check_binary("pip") else "pip3"
-    cmd = f"{pip_cmd} install {package_name}"
-    ret, err = run_subprocess(cmd, capture_output=True)
-    if ret == 0:
-        print(f"[+] {tool_name} installed successfully.")
-    else:
-        print(f"[!] Failed to install {tool_name}: {err}")
-
-def ensure_tools_installed():
-    """
-    Check and install all required tools.
-    """
-    # 1. Ensure Go is present for Go-based tools
-    ensure_go_installed()
-
-    # 2. Install Go-based tools
-    for binary, go_path in GO_TOOLS.items():
-        if not check_binary(binary):
-            install_go_tool(binary, go_path)
-        else:
-            print(f"[+] {binary} already installed.")
-
-    # 3. Install Python-based tools
-    for binary, pkg in PYPI_TOOLS.items():
-        if not check_binary(binary):
-            install_python_tool(binary, pkg)
-        else:
-            print(f"[+] {binary} already installed.")
-
-    # 4. Special note for waybackurls (binary name: waybackurls)
-    if not check_binary("waybackurls"):
-        # Already covered as Go tool above
-        pass
-
-    print("[+] All required tools are installed or already present.")
-
-def write_domain_file(domain):
-    """
-    Write the target domain into 'domain.txt'.
-    """
-    with open("domain.txt", "w") as f:
-        f.write(domain + "\n")
-
 # ----------------------------
-#       Recon Functions
+#      Recon Functions
 # ----------------------------
 
-def recon_subfinder(domain):
-    """
-    Run subfinder and save output.
-    """
-    outfile = "subfinder.txt"
-    cmd = f"subfinder -d {domain}"
-    print(f"[+] Running: {cmd}")
-    out, err = run_subprocess(cmd, capture_output=True)
-    if out:
-        with open(outfile, "w") as f:
-            f.write(out + "\n")
-        print(f"[+] subfinder results → {outfile}")
+def run_subfinder(domain):
+    """Run subfinder and save results"""
+    output_file = "subfinder.txt"
+    cmd = f"subfinder -d {domain} -silent"
+    print_status(f"Running subfinder on {domain}")
+    
+    stdout, stderr, retcode = run_command(cmd)
+    if stdout and retcode == 0:
+        if write_file(output_file, stdout):
+            print_success(f"Subfinder results saved to {output_file}")
+            return True
+    return False
 
-def recon_assetfinder(domain):
-    """
-    Run assetfinder and save output.
-    """
-    outfile = "assetfinder.txt"
-    cmd = f"assetfinder {domain}"
-    print(f"[+] Running: {cmd}")
-    out, err = run_subprocess(cmd, capture_output=True)
-    if out:
-        with open(outfile, "w") as f:
-            f.write(out + "\n")
-        print(f"[+] assetfinder results → {outfile}")
+def run_assetfinder(domain):
+    """Run assetfinder and save results"""
+    output_file = "assetfinder.txt"
+    cmd = f"assetfinder --subs-only {domain}"
+    print_status(f"Running assetfinder on {domain}")
+    
+    stdout, stderr, retcode = run_command(cmd)
+    if stdout and retcode == 0:
+        if write_file(output_file, stdout):
+            print_success(f"Assetfinder results saved to {output_file}")
+            return True
+    return False
 
-def recon_merge_subs():
-    """
-    Merge and dedupe subdomains from subfinder.txt & assetfinder.txt → uniq_subs.txt
-    """
-    outfile = "uniq_subs.txt"
-    cmd = "cat subfinder.txt assetfinder.txt | sort -u"
-    print(f"[+] Running: {cmd}")
-    out, err = run_subprocess(cmd, capture_output=True)
-    if out:
-        with open(outfile, "w") as f:
-            f.write(out + "\n")
-        print(f"[+] Unique subdomains → {outfile}")
+def merge_subdomains():
+    """Merge and deduplicate subdomain lists"""
+    input_files = ["subfinder.txt", "assetfinder.txt"]
+    output_file = "uniq_subs.txt"
+    
+    # Check if input files exist
+    for f in input_files:
+        if not Path(f).is_file():
+            print_error(f"Missing input file: {f}")
+            return False
+    
+    print_status("Merging subdomain lists")
+    cmd = f"cat {' '.join(input_files)} | sort -u"
+    stdout, stderr, retcode = run_command(cmd)
+    
+    if stdout and retcode == 0:
+        if write_file(output_file, stdout):
+            print_success(f"Merged subdomains saved to {output_file}")
+            return True
+    return False
 
-def recon_httpx():
-    """
-    Run httpx on uniq_subs.txt → httpx-toolkit.txt
-    """
-    infile = "uniq_subs.txt"
-    outfile = "httpx-toolkit.txt"
-    cmd = f"cat {infile} | httpx -sc -location -ip -title -tech-detect"
-    print(f"[+] Running: {cmd}")
-    out, err = run_subprocess(cmd, capture_output=True)
-    if out:
-        with open(outfile, "w") as f:
-            f.write(out + "\n")
-        print(f"[+] httpx results → {outfile}")
+def run_httpx():
+    """Run httpx on subdomains"""
+    input_file = "uniq_subs.txt"
+    output_file = "httpx_results.txt"
+    
+    if not Path(input_file).is_file():
+        print_error(f"Missing input file: {input_file}")
+        return False
+    
+    print_status("Running httpx on subdomains")
+    cmd = f"httpx -l {input_file} -sc -title -tech-detect -ip -o {output_file}"
+    _, stderr, retcode = run_command(cmd)
+    
+    if retcode == 0:
+        print_success(f"HTTPX results saved to {output_file}")
+        return True
+    else:
+        print_error(f"HTTPX failed: {stderr}")
+        return False
 
-def recon_wayback(domain):
-    """
-    Run waybackurls on domain → waybackurls.txt
-    """
-    infile = "domain.txt"
-    outfile = "waybackurls.txt"
-    cmd = f"cat {infile} | waybackurls"
-    print(f"[+] Running: {cmd}")
-    out, err = run_subprocess(cmd, capture_output=True)
-    if out:
-        with open(outfile, "w") as f:
-            f.write(out + "\n")
-        print(f"[+] waybackurls results → {outfile}")
+def run_waybackurls(domain):
+    """Run waybackurls on domain"""
+    output_file = "waybackurls.txt"
+    cmd = f"echo {domain} | waybackurls"
+    print_status(f"Running waybackurls on {domain}")
+    
+    stdout, stderr, retcode = run_command(cmd)
+    if stdout and retcode == 0:
+        if write_file(output_file, stdout):
+            print_success(f"Waybackurls results saved to {output_file}")
+            return True
+    return False
 
-def recon_gau(domain):
-    """
-    Run gau on domain → gau.txt
-    """
-    outfile = "gau.txt"
+def run_gau(domain):
+    """Run gau on domain"""
+    output_file = "gau_results.txt"
     cmd = f"gau {domain}"
-    print(f"[+] Running: {cmd}")
-    out, err = run_subprocess(cmd, capture_output=True)
-    if out:
-        with open(outfile, "w") as f:
-            f.write(out + "\n")
-        print(f"[+] gau results → {outfile}")
+    print_status(f"Running gau on {domain}")
+    
+    stdout, stderr, retcode = run_command(cmd)
+    if stdout and retcode == 0:
+        if write_file(output_file, stdout):
+            print_success(f"GAU results saved to {output_file}")
+            return True
+    return False
 
-def recon_paramspider(domain):
-    """
-    Run paramspider on domain with and without custom payload.
-    """
-    # 1. Default scan
-    outfile1 = "paramspider.txt"
-    cmd1 = f"paramspider -d {domain} -s"
-    print(f"[+] Running: {cmd1}")
-    out1, err1 = run_subprocess(cmd1, capture_output=True)
-    if out1:
-        with open(outfile1, "w") as f:
-            f.write(out1 + "\n")
-        print(f"[+] paramspider results → {outfile1}")
+def run_paramspider(domain):
+    """Run paramspider on domain"""
+    output_file = "paramspider.txt"
+    cmd = f"paramspider -d {domain} -o {output_file}"
+    print_status(f"Running paramspider on {domain}")
+    
+    _, stderr, retcode = run_command(cmd)
+    if retcode == 0:
+        if Path(output_file).is_file():
+            print_success(f"Paramspider results saved to {output_file}")
+            return True
+    print_error(f"Paramspider failed: {stderr}")
+    return False
 
-    # 2. Custom payload example
-    payload = "--><h1>40sp31</h1>"
-    cmd2 = f"paramspider -d {domain} -p '{payload}'"
-    print(f"[+] Running: {cmd2}")
-    out2, err2 = run_subprocess(cmd2, capture_output=True)
-    # not saving to file for custom payload, just printing
-    if out2:
-        print(f"[+] paramspider (custom payload) found:\n{out2}")
+def run_gobuster(url):
+    """Run gobuster directory brute-forcing"""
+    if not Path(WORDLIST).is_file():
+        print_error(f"Wordlist not found: {WORDLIST}")
+        return False
+    
+    output_file = "gobuster.txt"
+    cmd = f"gobuster dir -u {url} -w {WORDLIST} -o {output_file}"
+    print_status(f"Running gobuster on {url}")
+    
+    _, stderr, retcode = run_command(cmd)
+    if retcode == 0:
+        print_success(f"Gobuster results saved to {output_file}")
+        return True
+    print_error(f"Gobuster failed: {stderr}")
+    return False
 
-def recon_gobuster(url):
-    """
-    Run gobuster dir brute-forcing. URL must be provided by user.
-    """
-    wordlist = "/usr/share/wordlists/dirbuster/directory-list-lowercase-2.3-medium.txt"
-    outfile = "gobuster.txt"
-    cmd = f"gobuster dir -u {url} -w {wordlist}"
-    print(f"[+] Running: {cmd}")
-    out, err = run_subprocess(cmd, capture_output=True)
-    if out:
-        with open(outfile, "w") as f:
-            f.write(out + "\n")
-        print(f"[+] gobuster results → {outfile}")
-
-def recon_dirsearch(url):
-    """
-    Run dirsearch on given URL.
-    """
-    outfile = "dirsearch.txt"
-    cmd = f"dirsearch -u {url}"
-    print(f"[+] Running: {cmd}")
-    out, err = run_subprocess(cmd, capture_output=True)
-    if out:
-        with open(outfile, "w") as f:
-            f.write(out + "\n")
-        print(f"[+] dirsearch results → {outfile}")
-
-def recon_extract_urls(filename):
-    """
-    Extract URLs from a given file via grep (regex).
-    Filename (e.g. filename.txt) must exist.
-    """
-    cmd = f"grep -Eo 'https?://[^ ]+?[a-zA-Z0-9\\-_.]+([^& ]+)' {filename} | grep -v '&'"
-    print(f"[+] Running: {cmd}")
-    out, err = run_subprocess(cmd, capture_output=True)
-    if out:
-        print(f"[+] Extracted URLs from {filename}:\n{out}")
-
-def recon_assetfinder_subs_only(domains_file):
-    """
-    Run `assetfinder --subs-only` on a file named 'domains'.
-    """
-    cmd = f"cat {domains_file} | assetfinder --subs-only"
-    print(f"[+] Running: {cmd}")
-    out, err = run_subprocess(cmd, capture_output=True)
-    if out:
-        print(f"[+] assetfinder --subs-only output:\n{out}")
+def run_dirsearch(url):
+    """Run dirsearch directory scanning"""
+    output_file = "dirsearch.txt"
+    cmd = f"dirsearch -u {url} --plain-text-report={output_file}"
+    print_status(f"Running dirsearch on {url}")
+    
+    _, stderr, retcode = run_command(cmd)
+    if retcode == 0:
+        print_success(f"Dirsearch results saved to {output_file}")
+        return True
+    print_error(f"Dirsearch failed: {stderr}")
+    return False
 
 # ----------------------------
-#         Main Workflow
+#      Main Execution
 # ----------------------------
 
 def main():
-    # 1. Parse command-line arguments
+    # Set up interrupt handler
+    signal.signal(signal.SIGINT, handle_interrupt)
+    
+    # Check arguments
     if len(sys.argv) < 2:
-        print("Usage: python recon.py <target-domain> [--url <example-url>]")
+        print("Usage: python recon.py <target-domain> [--url <target-url>]")
         sys.exit(1)
-
+    
     domain = sys.argv[1]
     url = None
-    # optional --url argument for gobuster/dirsearch
+    
+    # Parse optional URL argument
     if "--url" in sys.argv:
-        idx = sys.argv.index("--url")
-        if idx + 1 < len(sys.argv):
-            url = sys.argv[idx + 1]
-        else:
-            print("[!] --url provided but no URL specified.")
+        try:
+            url_idx = sys.argv.index("--url") + 1
+            url = sys.argv[url_idx]
+        except IndexError:
+            print_error("--url provided but no URL specified")
             sys.exit(1)
-
-    # 2. Ensure all tools are installed
-    ensure_tools_installed()
-
-    # 3. Write domain.txt
-    write_domain_file(domain)
-
-    # 4. Prepare a list of recon tasks to run in parallel
-    tasks = []
-    results = []
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        # subfinder
-        tasks.append(executor.submit(recon_subfinder, domain))
-        # assetfinder
-        tasks.append(executor.submit(recon_assetfinder, domain))
-        # After both subfinder & assetfinder finish, merge
-        # Note: we wait for them to complete below before merging
-        # gau, wayback, paramspider can run immediately
-        tasks.append(executor.submit(recon_gau, domain))
-        tasks.append(executor.submit(recon_wayback, domain))
-        tasks.append(executor.submit(recon_paramspider, domain))
-
-        # Extract URLs from a pre-existing file "filename.txt"
-        if os.path.exists("filename.txt"):
-            tasks.append(executor.submit(recon_extract_urls, "filename.txt"))
-        else:
-            print("[*] filename.txt not found, skipping URL extraction step.")
-
-        # assetfinder --subs-only on "domains" if exists
-        if os.path.exists("domains"):
-            tasks.append(executor.submit(recon_assetfinder_subs_only, "domains"))
-        else:
-            print("[*] domains file not found, skipping assetfinder --subs-only step.")
-
-        # gobuster & dirsearch require user-provided URL
-        if url:
-            tasks.append(executor.submit(recon_gobuster, url))
-            tasks.append(executor.submit(recon_dirsearch, url))
-        else:
-            print("[*] No --url provided, skipping gobuster & dirsearch steps.")
-
-        # Wait for subfinder & assetfinder to finish before merging
-        for future in as_completed(tasks):
-            pass  # just ensuring subfinder/assetfinder finish
-
-    # 5. Now that subfinder.txt & assetfinder.txt exist, merge them
-    if os.path.exists("subfinder.txt") and os.path.exists("assetfinder.txt"):
-        recon_merge_subs()
-        # run httpx on merged subdomains
-        recon_httpx()
+    
+    # Ensure tools are installed
+    ensure_tools()
+    
+    # Create domain file
+    write_file("domain.txt", domain)
+    
+    # Run recon tasks in parallel where possible
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(run_subfinder, domain): "subfinder",
+            executor.submit(run_assetfinder, domain): "assetfinder",
+            executor.submit(run_gau, domain): "gau",
+            executor.submit(run_waybackurls, domain): "waybackurls",
+            executor.submit(run_paramspider, domain): "paramspider"
+        }
+        
+        # Wait for parallel tasks to complete
+        for future in as_completed(futures):
+            task_name = futures[future]
+            try:
+                success = future.result()
+                if not success:
+                    print_error(f"{task_name} task failed")
+            except Exception as e:
+                print_error(f"{task_name} task raised exception: {str(e)}")
+    
+    # Run sequential tasks that depend on previous results
+    if not merge_subdomains():
+        print_error("Failed to merge subdomains, skipping httpx")
     else:
-        print("[!] subfinder.txt or assetfinder.txt missing, skipping merge and httpx steps.")
-
-    print("\n[+] Recon workflow completed.")
+        run_httpx()
+    
+    # Run URL-based tools if URL provided
+    if url:
+        run_gobuster(url)
+        run_dirsearch(url)
+    
+    print_success("Reconnaissance completed")
 
 if __name__ == "__main__":
     main()

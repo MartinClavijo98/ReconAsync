@@ -84,7 +84,7 @@ def check_binary(binary_name):
 
 def append_go_bin_to_path():
     """
-    If GO binaries were installed to GOPATH/bin or GOBIN, ensure that folder is in PATH.
+    If Go binaries were installed to GOPATH/bin or GOBIN, ensure that folder is in PATH.
     """
     # Check GOBIN first
     gobin = os.environ.get("GOBIN")
@@ -357,7 +357,6 @@ async def recon_wayback(domain: str):
     """
     Run waybackurls async and save output to waybackurls.txt.
     """
-    # Directly pass domain to waybackurls (cross-platform)
     await run_subprocess_async(f"waybackurls {domain}", "waybackurls.txt")
 
 async def recon_gau(domain: str):
@@ -528,7 +527,6 @@ async def main():
     else:
         print("[*] domains file not found, skipping assetfinder --subs-only step.")
 
-    # Gobuster & Dirsearch only if URL is provided
     if url:
         tasks.append(recon_gobuster(url))
         tasks.append(recon_dirsearch(url))
@@ -548,7 +546,11 @@ async def main():
 
 # Entry point
 if __name__ == "__main__":
-    # For Windows: apply necessary event loop policy
-    if is_windows():
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(main())
+    try:
+        if is_windows():
+            # On Windows, set appropriate event loop policy
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n[!] Interrupted by user.")
+        sys.exit(0)

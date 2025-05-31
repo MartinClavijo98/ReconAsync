@@ -3,7 +3,7 @@
 """
 Filename    : recon_async.py
 Description : Cross-platform asynchronous reconnaissance script with automatic dependency installation
-Usage       : python recon_async.py <target-domain> [--url <example-url>] [--install]
+Usage       : python3 recon_async.py <target-domain> [--url <example-url>] [--install]
 """
 
 import os
@@ -50,9 +50,9 @@ GO_TOOLS = {
     }
 }
 
+# We remove paramspider from simple PyPI list and handle it specially via git clone.
 PYPI_TOOLS = {
-    "dirsearch": "dirsearch",
-    "paramspider": "paramspider"
+    "dirsearch": "dirsearch"
 }
 
 MAX_HTTP_CONCURRENCY = 50
@@ -63,15 +63,16 @@ DEFAULT_WORDLIST_WINDOWS = r"C:\wordlists\directory-list-lowercase-2.3-medium.tx
 VENV_PATH = os.path.join(os.getcwd(), "recon_venv")
 PYTHON_BIN = sys.executable
 
-# Helper Functions
 def is_windows():
+    """Check if the current OS is Windows."""
     return platform.system().lower().startswith("win")
 
 def is_linux():
+    """Check if the current OS is Linux."""
     return platform.system().lower().startswith("linux")
 
 def run_subprocess_sync(cmd, capture_output=False, cwd=None):
-    """Run a shell command synchronously with better error handling"""
+    """Run a shell command synchronously with better error handling."""
     try:
         if capture_output:
             proc = subprocess.run(
@@ -91,28 +92,25 @@ def run_subprocess_sync(cmd, capture_output=False, cwd=None):
         return -1, None, str(e)
 
 def check_binary(binary_name):
-    """Check if a binary exists in PATH"""
+    """Check if a binary exists in PATH."""
     return shutil.which(binary_name) is not None
 
 def setup_environment():
-    """Setup necessary environment variables"""
-    # Set GOPROXY for Go tools
+    """Setup necessary environment variables for Go tools."""
     os.environ["GOPROXY"] = "https://goproxy.io,direct"
     os.environ["GO111MODULE"] = "on"
 
-    # Add Go binaries to PATH
-    gopath = os.environ.get("GOPATH", os.path.join(os.environ["HOME"], "go"))
+    gopath = os.environ.get("GOPATH", os.path.join(os.environ.get("HOME", ""), "go"))
     bin_path = os.path.join(gopath, "bin")
-    if bin_path not in os.environ["PATH"].split(os.pathsep):
+    if bin_path not in os.environ.get("PATH", "").split(os.pathsep):
         os.environ["PATH"] = f"{bin_path}{os.pathsep}{os.environ['PATH']}"
 
 def create_virtualenv():
-    """Create and activate a Python virtual environment"""
+    """Create and return pip path of a Python virtual environment."""
     if not os.path.exists(VENV_PATH):
         print("[*] Creating Python virtual environment...")
         venv.create(VENV_PATH, with_pip=True)
 
-    # Determine the correct pip path based on OS
     pip_path = os.path.join(VENV_PATH, "bin", "pip")
     if is_windows():
         pip_path = os.path.join(VENV_PATH, "Scripts", "pip.exe")
@@ -120,13 +118,11 @@ def create_virtualenv():
     return pip_path
 
 def install_python_tool(tool_name, package_name):
-    """Install Python tools in the virtual environment"""
+    """Install a Python tool via pip in the virtual environment."""
     print(f"[*] Installing Python tool: {tool_name}...")
     pip_path = create_virtualenv()
-
     cmd = f"{pip_path} install {package_name} --break-system-packages"
     ret, out, err = run_subprocess_sync(cmd, capture_output=True)
-
     if ret == 0:
         print(f"[+] {tool_name} installed successfully.")
         return True
@@ -134,83 +130,139 @@ def install_python_tool(tool_name, package_name):
         print(f"[!] Failed to install {tool_name}: {err}")
         return False
 
+def install_paramspider():
+    """
+    Install paramspider by cloning its GitHub repository and running setup.py.
+    Falls back to an automatic git-based installation if paramspider is not in PATH.
+    """
+    print("[*] Installing Python tool: paramspider...")
+    if check_binary("paramspider"):
+        print("[+] paramspider is already installed.")
+        return True
+
+    tmp_dir = tempfile.mkdtemp(prefix="paramspider_")
+    try:
+        # Clone the paramspider repo
+        repo_url = "https://github.com/devanshbatham/ParamSpider.git"
+        clone_cmd = f"git clone {repo_url} {tmp_dir}"
+        ret, out, err = run_subprocess_sync(clone_cmd, capture_output=True)
+        if ret != 0:
+            print(f"[!] Failed to clone paramspider repo: {err}")
+            return False
+
+        # Install requirements.txt if exists
+        req_file = os.path.join(tmp_dir, "requirements.txt")
+        if os.path.isfile(req_file):
+            pip_path = create_virtualenv()
+            install_reqs_cmd = f"{pip_path} install -r {req_file}"
+            ret, out, err = run_subprocess_sync(install_reqs_cmd, capture_output=True)
+            if ret != 0:
+                print(f"[!] Failed to install paramspider requirements: {err}")
+                # Continue to try the setup even if requirements failed
+
+        # Run setup.py install
+        setup_path = os.path.join(tmp_dir, "setup.py")
+        if os.path.isfile(setup_path):
+            install_cmd = f"{PYTHON_BIN} {setup_path} install"
+            ret, out, err = run_subprocess_sync(install_cmd, capture_output=True)
+            if ret == 0:
+                print("[+] paramspider installed successfully.")
+                return True
+            else:
+                print(f"[!] Failed to run paramspider setup.py: {err}")
+                return False
+        else:
+            print("[!] setup.py not found in paramspider repo.")
+            return False
+
+    except Exception as e:
+        print(f"[!] Exception during paramspider installation: {e}")
+        return False
+
+    finally:
+        # Clean up temporary directory
+        try:
+            shutil.rmtree(tmp_dir)
+        except Exception:
+            pass
+
 def install_go_tool(tool_name, go_path):
-    """Install Go tools with proper error handling"""
+    """Install Go tools with proper error handling."""
     print(f"[*] Installing Go tool: {tool_name}...")
 
-    # Try standard installation first
+    # Verify 'go' binary exists
+    if not check_binary("go"):
+        print(f"[!] 'go' command not found. Please install Go before proceeding.")
+        return False
+
     cmd = f"go install {go_path}"
     ret, out, err = run_subprocess_sync(cmd, capture_output=True)
-
     if ret == 0:
         print(f"[+] {tool_name} installed successfully.")
         return True
 
-    # If standard installation fails, try alternative methods
-    print(f"[!] Standard installation failed, trying alternatives: {err}")
-
-    if tool_name == "paramspider":
-        print("[*] Trying alternative installation for paramspider...")
-        alt_cmd = "go install github.com/devanshbatham/ParamSpider@latest"
-        ret, out, err = run_subprocess_sync(alt_cmd, capture_output=True)
-        if ret == 0:
-            print("[+] ParamSpider installed successfully with alternative method.")
-            return True
-
-    print(f"[!] Failed to install {tool_name}")
+    # If standard installation fails, try alternative methods (currently none for other tools)
+    print(f"[!] Standard installation failed for {tool_name}: {err}")
     return False
 
 def install_system_dependencies():
-    """Install required system dependencies"""
+    """Install required system dependencies."""
     print("[*] Checking system dependencies...")
-
     if is_linux():
-        # Install basic dependencies
-        print("[*] Installing basic system dependencies...")
+        print("[*] Installing basic system dependencies for Linux...")
         run_subprocess_sync("sudo apt-get update -y")
         run_subprocess_sync("sudo apt-get install -y git golang python3-venv python3-pip")
 
-        # Install wordlist for dirsearch
+        # Try to install default wordlist for dirsearch, but ignore errors if not found
         if not os.path.exists(DEFAULT_WORDLIST_LINUX):
-            print("[*] Installing default wordlist...")
-            run_subprocess_sync("sudo apt-get install -y dirbuster")
-
+            run_subprocess_sync("sudo apt-get install -y wordlists")
     elif is_windows():
-        print("[*] Please ensure you have Git, Go, and Python installed on Windows")
+        print("[*] Please ensure you have Git, Go, and Python installed on Windows.")
         print("[*] You may need to install Chocolatey first: https://chocolatey.org/install")
-        run_subprocess_sync("choco install git golang python -y", capture_output=False)
+        run_subprocess_sync("choco install git golang python -y")
 
 def ensure_tools_installed():
-    """Ensure all required tools are installed"""
+    """Ensure all required tools are installed (Go, Python, paramspider)."""
     setup_environment()
     install_system_dependencies()
 
     # Install Go tools
     for tool, info in GO_TOOLS.items():
         if not check_binary(tool):
-            if not install_go_tool(tool, info["install"]):
-                print(f"[!] Warning: {tool} installation failed")
+            success = install_go_tool(tool, info["install"])
+            if not success:
+                print(f"[!] Warning: {tool} installation failed.")
         else:
-            print(f"[+] {tool} is already installed")
+            print(f"[+] {tool} is already installed.")
 
-    # Install Python tools
+    # Install Python tools via pip
     for tool, pkg in PYPI_TOOLS.items():
         if not check_binary(tool):
-            if not install_python_tool(tool, pkg):
-                print(f"[!] Warning: {tool} installation failed")
+            success = install_python_tool(tool, pkg)
+            if not success:
+                print(f"[!] Warning: {tool} installation failed.")
         else:
-            print(f"[+] {tool} is already installed")
+            print(f"[+] {tool} is already installed.")
 
-    print("[+] Tool installation verification complete")
+    # Install paramspider via GitHub if missing
+    if not check_binary("paramspider"):
+        success = install_paramspider()
+        if not success:
+            print("[!] Warning: paramspider installation failed.")
+    else:
+        print(f"[+] paramspider is already installed.")
+
+    print("[+] Tool installation verification complete.")
 
 def write_domain_file(domain: str):
-    """Write the target domain into 'domain.txt'"""
+    """Write the target domain into 'domain.txt'."""
     with open("domain.txt", "w", encoding="utf-8") as f:
         f.write(domain + "\n")
     print(f"[+] domain.txt created with {domain}")
 
-# Asynchronous Recon Tasks (unchanged from original)
+# Asynchronous Recon Tasks
 async def run_subprocess_async(cmd: str, outfile: str = None):
+    """Run a shell command asynchronously and optionally save output."""
     print(f"[+] Running (async): {cmd}")
     process = await asyncio.create_subprocess_shell(
         cmd,
@@ -234,12 +286,15 @@ async def run_subprocess_async(cmd: str, outfile: str = None):
             print(out_text)
 
 async def recon_subfinder(domain: str):
+    """Run subfinder asynchronously and save results to 'subfinder.txt'."""
     await run_subprocess_async(f"subfinder -d {domain}", "subfinder.txt")
 
 async def recon_assetfinder(domain: str):
+    """Run assetfinder asynchronously and save results to 'assetfinder.txt'."""
     await run_subprocess_async(f"assetfinder {domain}", "assetfinder.txt")
 
 async def recon_merge_subs():
+    """Merge subfinder.txt and assetfinder.txt into uniq_subs.txt."""
     if not (os.path.exists("subfinder.txt") and os.path.exists("assetfinder.txt")):
         print("[!] Cannot merge subs: subfinder.txt or assetfinder.txt missing.")
         return
@@ -256,12 +311,17 @@ async def recon_merge_subs():
     print("[+] Unique subdomains written to uniq_subs.txt")
 
 async def recon_httpx_cli():
+    """Run httpx in CLI mode on uniq_subs.txt and save to 'httpx_cli.txt'."""
     if not os.path.exists("uniq_subs.txt"):
         print("[!] uniq_subs.txt not found, skipping httpx CLI step.")
         return
     await run_subprocess_async("httpx -l uniq_subs.txt -o httpx_cli.txt", "httpx_cli.txt")
 
 async def recon_httpx_async():
+    """
+    Run httpx asynchronously: resolve IP, fetch HTTP status/title/server.
+    Save results to 'httpx_async.csv'.
+    """
     if not os.path.exists("uniq_subs.txt"):
         print("[!] uniq_subs.txt not found, skipping httpx async step.")
         return
@@ -317,15 +377,25 @@ async def recon_httpx_async():
     print("[+] httpx async scan saved to httpx_async.csv")
 
 async def recon_gau(domain: str):
+    """Run gau to fetch URLs and save to 'gau.txt'."""
     await run_subprocess_async(f"gau {domain}", "gau.txt")
 
 async def recon_waybackurls(domain: str):
+    """Run waybackurls and save to 'waybackurls.txt'."""
     await run_subprocess_async(f"waybackurls {domain}", "waybackurls.txt")
 
 async def recon_paramspider(domain: str):
+    """Run paramspider -d <domain> and save to 'paramspider.txt'."""
+    if not check_binary("paramspider"):
+        print("[!] paramspider binary not found, skipping paramspider step.")
+        return
     await run_subprocess_async(f"paramspider -d {domain}", "paramspider.txt")
 
 async def recon_dirsearch(url: str):
+    """
+    Run dirsearch on a provided URL. If default wordlist not found, attempt to download it.
+    Save results to 'dirsearch.txt'.
+    """
     if not url:
         print("[!] URL not provided, skipping dirsearch.")
         return
@@ -385,7 +455,7 @@ async def main():
     ensure_tools_installed()
 
     # Check for missing tools
-    required_tools = list(GO_TOOLS.keys()) + list(PYPI_TOOLS.keys())
+    required_tools = list(GO_TOOLS.keys()) + list(PYPI_TOOLS.keys()) + ["paramspider"]
     missing_tools = [tool for tool in required_tools if not check_binary(tool)]
 
     if missing_tools:

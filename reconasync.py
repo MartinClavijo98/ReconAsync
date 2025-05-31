@@ -38,7 +38,7 @@ TOOLS = {
     },
     "httpx": {
         "install": "go install github.com/projectdiscovery/httpx/cmd/httpx@latest",
-        "cmd": "httpx -l {input} -silent -json -o {output}"
+        "cmd": "httpx -list {input} -silent -json -o {output}"
     },
     "gau": {
         "install": "go install github.com/lc/gau/v2/cmd/gau@latest",
@@ -52,11 +52,11 @@ TOOLS = {
     # Python tools
     "dirsearch": {
         "install": "pip install dirsearch",
-        "cmd": "dirsearch -u {target} -e php,asp,aspx,jsp,html,js,json -w {wordlist} -o {output}"
+        "cmd": "dirsearch -u {target} -e php,asp,aspx,jsp,html,js,json -w {wordlist} > {output}"
     },
     "paramspider": {
         "install": "pip install git+https://github.com/devanshbatham/ParamSpider.git",
-        "cmd": "paramspider -d {target} -o {output}"
+        "cmd": "paramspider -d {target} > {output}"
     }
 }
 

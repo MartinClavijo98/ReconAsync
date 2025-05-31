@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Enhanced Reconnaissance Toolkit (ERT)
+Enhanced Reconnaissance Toolkit (ERT) - Fixed Version
 A comprehensive asynchronous reconnaissance tool with automatic dependency management
-Version: 2.0.0
+Version: 2.0.1
 """
 
 import os
@@ -18,12 +18,13 @@ import venv
 import time
 import json
 import csv
+import signal
 from pathlib import Path
 from urllib.parse import urlparse
 from datetime import datetime
 
 # Global Configuration
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 AUTHOR = "AIGPTCODE"
 LICENSE = "MIT"
 
@@ -503,7 +504,7 @@ async def recon_dirsearch(url: str, output_dir: str):
         f"dirsearch -u {url} "
         f"-e php,asp,aspx,jsp,html,js,json "
         f"-w {wordlist_path} "
-        f"-o {output_file}"  # Changed from --plain-text-report to -o
+        f"-o {output_file}"  # Fixed: Changed from --plain-text-report to -o
     )
     await run_subprocess_async(dirsearch_cmd)
 
@@ -511,17 +512,7 @@ def main():
     print_banner()
     
     # Handle SIGINT (Ctrl+C) properly
-    import signal
     signal.signal(signal.SIGINT, lambda s, f: sys.exit(1))
-    
-    parser = argparse.ArgumentParser(
-        description='Enhanced Reconnaissance Toolkit (ERT) - Comprehensive security reconnaissance tool',
-        epilog=f"Example: python3 {sys.argv[0]} example.com --url http://example.com"
-    )
-
-
-async def main():
-    print_banner()
     
     parser = argparse.ArgumentParser(
         description='Enhanced Reconnaissance Toolkit (ERT) - Comprehensive security reconnaissance tool',

@@ -26,17 +26,35 @@ import re
 # ----------------------------
 
 GO_TOOLS = {
-    "subfinder":        "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
-    "assetfinder":      "github.com/tomnomnom/assetfinder@latest",
-    "httpx":            "github.com/projectdiscovery/httpx/cmd/httpx@latest",
-    "gobuster":         "github.com/OJ/gobuster/v3@latest",
-    "paramspider":      "github.com/devanshbatham/ParamSpider@latest",
-    "gau":              "github.com/lc/gau/v2/cmd/gau@latest",
-    "waybackurls":      "github.com/tomnomnom/waybackurls@latest"
+    "subfinder": {
+        "install": "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
+        "repo": "https://github.com/projectdiscovery/subfinder"
+    },
+    "assetfinder": {
+        "install": "github.com/tomnomnom/assetfinder@latest",
+        "repo": "https://github.com/tomnomnom/assetfinder"
+    },
+    "httpx": {
+        "install": "github.com/projectdiscovery/httpx/cmd/httpx@latest",
+        "repo": "https://github.com/projectdiscovery/httpx"
+    },
+    "gobuster": {
+        "install": "github.com/OJ/gobuster/v3@latest",
+        "repo": "https://github.com/OJ/gobuster"
+    },
+    "gau": {
+        "install": "github.com/lc/gau/v2/cmd/gau@latest",
+        "repo": "https://github.com/lc/gau"
+    },
+    "waybackurls": {
+        "install": "github.com/tomnomnom/waybackurls@latest",
+        "repo": "https://github.com/tomnomnom/waybackurls"
+    }
 }
 
 PYPI_TOOLS = {
-    "dirsearch":        "dirsearch"
+    "dirsearch": "dirsearch",
+    "paramspider": "paramspider"
 }
 
 MAX_HTTP_CONCURRENCY = 50
@@ -78,18 +96,23 @@ def append_go_bin_to_path():
     """
     Ensure that GOBIN or GOPATH/bin is in PATH after installing Go tools.
     """
+    path = os.environ.get("PATH", "")
+    added_paths = []
+
     gobin = os.environ.get("GOBIN")
-    if gobin and os.path.isdir(gobin):
-        if gobin not in os.environ.get("PATH", ""):
-            os.environ["PATH"] += os.pathsep + gobin
-            print(f"[~] Added GOBIN ({gobin}) to PATH.")
+    if gobin and os.path.isdir(gobin) and gobin not in path:
+        os.environ["PATH"] += os.pathsep + gobin
+        added_paths.append(gobin)
 
     gopath = os.environ.get("GOPATH")
     if gopath:
         bin_path = os.path.join(gopath, "bin")
-        if os.path.isdir(bin_path) and bin_path not in os.environ.get("PATH", ""):
+        if os.path.isdir(bin_path) and bin_path not in path:
             os.environ["PATH"] += os.pathsep + bin_path
-            print(f"[~] Added GOPATH/bin ({bin_path}) to PATH.")
+            added_paths.append(bin_path)
+
+    if added_paths:
+        print(f"[~] Added paths to PATH: {', '.join(added_paths)}")
 
 def install_go_linux():
     print("[*] Installing Go (golang-go) via apt-get...")
@@ -168,9 +191,9 @@ def ensure_tools_installed():
     """
     ensure_go_installed()
 
-    for binary, go_path in GO_TOOLS.items():
+    for binary, go_info in GO_TOOLS.items():
         if not check_binary(binary):
-            install_go_tool(binary, go_path)
+            install_go_tool(binary, go_info["install"])
         else:
             print(f"[+] {binary} already installed.")
 
@@ -263,154 +286,161 @@ async def recon_httpx_cli():
 
 async def recon_httpx_async():
     """
-    Perform HTTP scanning (status, title, IP, server) on 'uniq_subs.txt' using aiohttp,
-    then write results to 'httpx_toolkit_async.csv'.
+    Perform HTTP scanning (status, title, IP, server) on uniq_subs.txt using aiohttp asynchronously.
+    Results saved to 'httpx_async.csv'.
     """
-    infile = "uniq_subs.txt"
-    outfile = "httpx_toolkit_async.csv"
-    if not os.path.exists(infile):
-        print("[!] uniq_subs.txt not found, skipping httpx_async step.")
+    if not os.path.exists("uniq_subs.txt"):
+        print("[!] uniq_subs.txt not found, skipping httpx async step.")
         return
-    with open(infile, "r", encoding="utf-8") as f:
-        hosts = [line.strip() for line in f if line.strip()]
-    semaphore = asyncio.Semaphore(MAX_HTTP_CONCURRENCY)
 
-    async def fetch_info(session: aiohttp.ClientSession, host: str):
+    # Read hosts
+    hosts = []
+    with open("uniq_subs.txt", "r", encoding="utf-8") as f:
+        for line in f:
+            host = line.strip()
+            if host:
+                hosts.append(host)
+
+    sem = asyncio.Semaphore(MAX_HTTP_CONCURRENCY)
+    session_timeout = aiohttp.ClientTimeout(total=10)
+
+    async def fetch_info(session, host):
         url = f"http://{host}"
-        data = {"host": host, "status": None, "title": None, "server": None, "ip": None}
-        # DNS resolution
+        data = {"host": host, "status": "N/A", "title": "N/A", "ip": "N/A", "server": "N/A"}
         try:
-            ip_addr = socket.gethostbyname(host)
-            data["ip"] = ip_addr
-        except Exception:
-            data["ip"] = "N/A"
-        # HTTP GET
-        try:
-            async with semaphore:
-                async with session.get(url, timeout=15, allow_redirects=True) as resp:
-                    data["status"] = resp.status
-                    data["server"] = resp.headers.get("Server", "N/A")
-                    text = await resp.text()
-                    title_match = re.search(r"<title>(.*?)</title>", text, re.I | re.S)
-                    data["title"] = title_match.group(1).strip() if title_match else "N/A"
-        except Exception as e:
-            data["status"] = "Err"
-            data["title"] = str(e)
-            data["server"] = "N/A"
-        return data
+            async with sem:
+                # DNS resolve
+                try:
+                    ip = socket.gethostbyname(host)
+                    data["ip"] = ip
+                except Exception:
+                    data["ip"] = "N/A"
 
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_info(session, h) for h in hosts]
+                async with session.get(url, timeout=10, allow_redirects=True) as resp:
+                    data["status"] = str(resp.status)
+                    server = resp.headers.get("Server", "N/A")
+                    data["server"] = server
+
+                    if resp.status == 200:
+                        text = await resp.text()
+                        # Extract <title> tag content
+                        match = re.search(r"<title>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
+                        if match:
+                            title = match.group(1).strip()
+                            # sanitize title (remove newlines)
+                            title = re.sub(r"[\r\n]+", " ", title)
+                            data["title"] = title
+                    return data
+        except Exception as e:
+            data["title"] = f"Error"
+            return data
+
+    async with aiohttp.ClientSession(timeout=session_timeout) as session:
+        tasks = [fetch_info(session, host) for host in hosts]
         results = await asyncio.gather(*tasks)
 
-    with open(outfile, "w", newline="", encoding="utf-8") as csvfile:
+    # Write CSV file
+    with open("httpx_async.csv", "w", newline="", encoding="utf-8") as csvfile:
         fieldnames = ["host", "status", "title", "ip", "server"]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
-        for res in results:
-            writer.writerow(res)
-
-    print(f"[+] HTTP info collected in {outfile}")
+        for item in results:
+            writer.writerow(item)
+    print("[+] httpx async scan saved to httpx_async.csv")
 
 async def recon_gau(domain: str):
     """
-    Run 'gau' (GetAllURLs) and save output to 'gau.txt'.
+    Run 'gau' on domain and save output to 'gau.txt'.
     """
     await run_subprocess_async(f"gau {domain}", "gau.txt")
 
-async def recon_wayback(domain: str):
+async def recon_waybackurls(domain: str):
     """
-    Run 'waybackurls' and save output to 'waybackurls.txt'.
+    Run 'waybackurls' on domain and save output to 'waybackurls.txt'.
     """
     await run_subprocess_async(f"waybackurls {domain}", "waybackurls.txt")
 
 async def recon_paramspider(domain: str):
     """
-    Run 'paramspider' and save output to 'paramspider.txt'.
+    Run 'paramspider' on domain, save output to 'paramspider.txt'.
     """
-    await run_subprocess_async(f"paramspider -d {domain} -o paramspider.txt", "paramspider.txt")
-
-async def recon_extract_urls(filename: str):
-    """
-    Extract URLs from a local file and print count (placeholder).
-    """
-    if not os.path.exists(filename):
-        print(f"[!] {filename} not found for URL extraction.")
-        return
-    with open(filename, "r", encoding="utf-8") as f:
-        urls = set(line.strip() for line in f if line.strip())
-    print(f"[+] Extracted {len(urls)} URLs from {filename}")
-    # Placeholder for further URL processing
-
-async def recon_gobuster(url: str):
-    """
-    Run 'gobuster' directory brute-forcing on a given URL.
-    Save output to 'gobuster.txt'.
-    """
-    wordlist = DEFAULT_WORDLIST_WINDOWS if is_windows() else DEFAULT_WORDLIST_LINUX
-    if not os.path.exists(wordlist):
-        print(f"[!] Wordlist not found at {wordlist}, skipping gobuster.")
-        return
-    cmd = f"gobuster dir -u {url} -w {wordlist} -t 50 -o gobuster.txt"
-    await run_subprocess_async(cmd, "gobuster.txt")
+    await run_subprocess_async(f"paramspider -d {domain}", "paramspider.txt")
 
 async def recon_dirsearch(url: str):
     """
-    Run 'dirsearch' on a given URL.
-    Save output to 'dirsearch.txt'.
+    Run 'dirsearch' brute forcing on URL.
     """
-    cmd = f"dirsearch -u {url} -e * -t 50 -o dirsearch.txt"
-    await run_subprocess_async(cmd, "dirsearch.txt")
+    if not url:
+        print("[!] URL not provided, skipping dirsearch.")
+        return
+
+    # Determine default wordlist path based on OS
+    if is_linux():
+        wordlist = DEFAULT_WORDLIST_LINUX
+    elif is_windows():
+        wordlist = DEFAULT_WORDLIST_WINDOWS
+    else:
+        wordlist = ""
+
+    if not os.path.isfile(wordlist):
+        print(f"[!] Wordlist not found: {wordlist}. Please set correct path or install wordlist.")
+        return
+
+    cmd = f"dirsearch -u {url} -e php,asp,aspx,jsp,html,js,json -w {wordlist} --plain-text-report=dirsearch.txt"
+    await run_subprocess_async(cmd)
 
 # ----------------------------
-#        Main Entry Point
+#      Main Function
 # ----------------------------
 
 async def main():
     if len(sys.argv) < 2:
-        print("Usage: python recon_async.py <target-domain> [--url <example-url>]")
+        print("Usage: python recon_async.py <domain> [--url <url>]")
         sys.exit(1)
 
     domain = sys.argv[1]
     url = None
-    if "--url" in sys.argv:
-        idx = sys.argv.index("--url")
-        if idx + 1 < len(sys.argv):
-            url = sys.argv[idx + 1]
-        else:
-            print("[!] --url provided but no URL specified.")
-            sys.exit(1)
+    if len(sys.argv) >= 4 and sys.argv[2] == "--url":
+        url = sys.argv[3]
 
-    # 1. Install/check all tools before starting scans
+    print(f"[*] Starting recon on domain: {domain}")
+    if url:
+        print(f"[*] URL provided for dirsearch: {url}")
+
     ensure_tools_installed()
 
-    # 2. Write domain to file
     write_domain_file(domain)
 
-    # 3. Run initial subdomain enumeration & URL collection tools in parallel
+    # Run subfinder and assetfinder concurrently
     await asyncio.gather(
         recon_subfinder(domain),
-        recon_assetfinder(domain),
-        recon_gau(domain),
-        recon_wayback(domain),
-        recon_paramspider(domain),
+        recon_assetfinder(domain)
     )
 
-    # 4. Merge subdomains after subfinder and assetfinder complete
+    # Merge results
     await recon_merge_subs()
 
-    # 5. Run httpx CLI scan on merged subdomains
+    # Run httpx CLI scanner on unique subs
     await recon_httpx_cli()
 
-    # 6. Run HTTP scan via aiohttp on merged subdomains
+    # Run httpx async HTTP checks
     await recon_httpx_async()
 
-    # 7. Run URL-related scans if URL provided
+    # Run gau, waybackurls, paramspider concurrently
+    await asyncio.gather(
+        recon_gau(domain),
+        recon_waybackurls(domain),
+        recon_paramspider(domain)
+    )
+
+    # Run dirsearch if URL is provided
     if url:
-        await asyncio.gather(
-            recon_gobuster(url),
-            recon_dirsearch(url),
-        )
+        await recon_dirsearch(url)
+
+    print("[*] Recon complete.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n[!] Interrupted by user. Exiting...")

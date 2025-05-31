@@ -411,7 +411,7 @@ async def recon_paramspider(domain: str):
         return
 
     # Run paramspider with proper arguments
-    await run_subprocess_async(f"paramspider --domain {domain} --output paramspider.txt")
+    await run_subprocess_async(f"paramspider -d {domain} > paramspider.txt")
 
 async def recon_dirsearch(url: str):
     """

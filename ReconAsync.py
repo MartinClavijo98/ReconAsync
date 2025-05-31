@@ -7,7 +7,7 @@ Description : Cross-platform asynchronous reconnaissance script using asyncio an
               - Runs multiple recon tools asynchronously
               - Merges results and performs HTTP analysis (httpx CLI and aiohttp)
               - Supports scanning domain and optionally URL with directory brute forcing
-Usage       : python recon_async.py <target-domain> [--url <example-url>]
+Usage       : python recon_async.py <target-domain> [--url <example-url>] [--install]
 """
 
 import os
@@ -20,6 +20,7 @@ import aiohttp
 import socket
 import csv
 import re
+import argparse
 
 # ----------------------------
 #      Global Configuration
@@ -394,14 +395,18 @@ async def recon_dirsearch(url: str):
 # ----------------------------
 
 async def main():
-    if len(sys.argv) < 2:
-        print("Usage: python recon_async.py <domain> [--url <url>]")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='Cross-platform asynchronous reconnaissance script.')
+    parser.add_argument('domain', type=str, help='Target domain for reconnaissance')
+    parser.add_argument('--url', type=str, help='Optional URL for directory brute-forcing')
+    parser.add_argument('--install', action='store_true', help='Install required tools and exit')
+    args = parser.parse_args()
 
-    domain = sys.argv[1]
-    url = None
-    if len(sys.argv) >= 4 and sys.argv[2] == "--url":
-        url = sys.argv[3]
+    if args.install:
+        ensure_tools_installed()
+        sys.exit(0)
+
+    domain = args.domain
+    url = args.url
 
     print(f"[*] Starting recon on domain: {domain}")
     if url:

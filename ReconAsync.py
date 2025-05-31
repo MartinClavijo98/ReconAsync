@@ -2,11 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Filename    : recon_async.py
-Description : Cross-platform asynchronous reconnaissance script using asyncio and aiohttp
-              - Checks and installs required tools (Go, Go tools, Python tools)
-              - Runs multiple recon tools asynchronously
-              - Merges results and performs HTTP analysis (httpx CLI and aiohttp)
-              - Supports scanning domain and optionally URL with directory brute forcing
+Description : Cross-platform asynchronous reconnaissance script with automatic dependency installation
 Usage       : python recon_async.py <target-domain> [--url <example-url>] [--install]
 """
 
@@ -21,11 +17,12 @@ import socket
 import csv
 import re
 import argparse
+import tempfile
+import venv
+from pathlib import Path
+from urllib.parse import urlparse
 
-# ----------------------------
-#      Global Configuration
-# ----------------------------
-
+# Global Configuration
 GO_TOOLS = {
     "subfinder": {
         "install": "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
@@ -59,170 +56,161 @@ PYPI_TOOLS = {
 }
 
 MAX_HTTP_CONCURRENCY = 50
-
 DEFAULT_WORDLIST_LINUX = "/usr/share/wordlists/dirbuster/directory-list-lowercase-2.3-medium.txt"
 DEFAULT_WORDLIST_WINDOWS = r"C:\wordlists\directory-list-lowercase-2.3-medium.txt"
 
-# ----------------------------
-#      Helper Functions
-# ----------------------------
+# Initialize virtual environment path
+VENV_PATH = os.path.join(os.getcwd(), "recon_venv")
+PYTHON_BIN = sys.executable
 
+# Helper Functions
 def is_windows():
     return platform.system().lower().startswith("win")
 
 def is_linux():
     return platform.system().lower().startswith("linux")
 
-def run_subprocess_sync(cmd, capture_output=False):
-    """
-    Run a shell command synchronously.
-    If capture_output=True, return (returncode, stdout, stderr).
-    Otherwise, return (returncode, None, None).
-    """
+def run_subprocess_sync(cmd, capture_output=False, cwd=None):
+    """Run a shell command synchronously with better error handling"""
     try:
         if capture_output:
-            proc = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            proc = subprocess.run(
+                cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=cwd
+            )
             return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
         else:
-            ret = subprocess.call(cmd, shell=True)
+            ret = subprocess.call(cmd, shell=True, cwd=cwd)
             return ret, None, None
     except Exception as e:
-        print(f"[!] Exception while running '{cmd}': {e}")
+        print(f"[!] Exception while running '{cmd}': {str(e)}")
         return -1, None, str(e)
 
 def check_binary(binary_name):
+    """Check if a binary exists in PATH"""
     return shutil.which(binary_name) is not None
 
-def append_go_bin_to_path():
-    """
-    Ensure that GOBIN or GOPATH/bin is in PATH after installing Go tools.
-    """
-    path = os.environ.get("PATH", "")
-    added_paths = []
+def setup_environment():
+    """Setup necessary environment variables"""
+    # Set GOPROXY for Go tools
+    os.environ["GOPROXY"] = "https://goproxy.io,direct"
+    os.environ["GO111MODULE"] = "on"
 
-    gobin = os.environ.get("GOBIN")
-    if gobin and os.path.isdir(gobin) and gobin not in path:
-        os.environ["PATH"] += os.pathsep + gobin
-        added_paths.append(gobin)
+    # Add Go binaries to PATH
+    gopath = os.environ.get("GOPATH", os.path.join(os.environ["HOME"], "go"))
+    bin_path = os.path.join(gopath, "bin")
+    if bin_path not in os.environ["PATH"].split(os.pathsep):
+        os.environ["PATH"] = f"{bin_path}{os.pathsep}{os.environ['PATH']}"
 
-    gopath = os.environ.get("GOPATH")
-    if gopath:
-        bin_path = os.path.join(gopath, "bin")
-        if os.path.isdir(bin_path) and bin_path not in path:
-            os.environ["PATH"] += os.pathsep + bin_path
-            added_paths.append(bin_path)
+def create_virtualenv():
+    """Create and activate a Python virtual environment"""
+    if not os.path.exists(VENV_PATH):
+        print("[*] Creating Python virtual environment...")
+        venv.create(VENV_PATH, with_pip=True)
 
-    if added_paths:
-        print(f"[~] Added paths to PATH: {', '.join(added_paths)}")
+    # Determine the correct pip path based on OS
+    pip_path = os.path.join(VENV_PATH, "bin", "pip")
+    if is_windows():
+        pip_path = os.path.join(VENV_PATH, "Scripts", "pip.exe")
 
-def install_go_linux():
-    print("[*] Installing Go (golang-go) via apt-get...")
-    run_subprocess_sync("sudo apt-get update -y")
-    code, out, err = run_subprocess_sync("sudo apt-get install -y golang-go", capture_output=True)
-    if code == 0:
-        print("[+] Go installed successfully.")
-        append_go_bin_to_path()
-    else:
-        print(f"[!] Failed to install Go: {err}")
-        sys.exit(1)
-
-def install_go_windows():
-    print("[*] Installing Go on Windows via choco or winget...")
-    if check_binary("choco"):
-        code, out, err = run_subprocess_sync("choco install golang -y", capture_output=True)
-        if code == 0:
-            print("[+] Go installed successfully via choco.")
-            append_go_bin_to_path()
-            return
-    if check_binary("winget"):
-        code, out, err = run_subprocess_sync("winget install --id Go.Go -e --source winget", capture_output=True)
-        if code == 0:
-            print("[+] Go installed successfully via winget.")
-            append_go_bin_to_path()
-            return
-    print("[!] Could not install Go automatically. Please install Go manually and re-run.")
-    sys.exit(1)
-
-def ensure_go_installed():
-    """
-    Ensure 'go' binary is present. If not, attempt to install on Linux or Windows.
-    """
-    if not check_binary("go"):
-        print("[*] Go is not installed.")
-        if is_linux():
-            install_go_linux()
-        elif is_windows():
-            install_go_windows()
-        else:
-            print("[!] Unsupported OS. Install Go manually.")
-            sys.exit(1)
-    else:
-        print("[+] Go is already installed.")
-        append_go_bin_to_path()
-
-def install_go_tool(tool_name, go_path):
-    """
-    Install a Go-based tool via 'go install <path>@latest'.
-    """
-    print(f"[*] Installing Go-based tool: {tool_name} ...")
-    cmd = f"GO111MODULE=on go install {go_path}"
-    ret, out, err = run_subprocess_sync(cmd, capture_output=True)
-    if ret == 0:
-        print(f"[+] {tool_name} installed successfully.")
-        append_go_bin_to_path()
-    else:
-        print(f"[!] Failed to install {tool_name}: {err}")
+    return pip_path
 
 def install_python_tool(tool_name, package_name):
-    """
-    Install a Python-based tool via pip.
-    """
-    print(f"[*] Installing Python-based tool: {tool_name} ...")
-    pip_cmd = "pip" if check_binary("pip") else "pip3"
-    cmd = f"{pip_cmd} install {package_name}"
+    """Install Python tools in the virtual environment"""
+    print(f"[*] Installing Python tool: {tool_name}...")
+    pip_path = create_virtualenv()
+
+    cmd = f"{pip_path} install {package_name} --break-system-packages"
     ret, out, err = run_subprocess_sync(cmd, capture_output=True)
+
     if ret == 0:
         print(f"[+] {tool_name} installed successfully.")
+        return True
     else:
         print(f"[!] Failed to install {tool_name}: {err}")
+        return False
+
+def install_go_tool(tool_name, go_path):
+    """Install Go tools with proper error handling"""
+    print(f"[*] Installing Go tool: {tool_name}...")
+
+    # Try standard installation first
+    cmd = f"go install {go_path}"
+    ret, out, err = run_subprocess_sync(cmd, capture_output=True)
+
+    if ret == 0:
+        print(f"[+] {tool_name} installed successfully.")
+        return True
+
+    # If standard installation fails, try alternative methods
+    print(f"[!] Standard installation failed, trying alternatives: {err}")
+
+    if tool_name == "paramspider":
+        print("[*] Trying alternative installation for paramspider...")
+        alt_cmd = "go install github.com/devanshbatham/ParamSpider@latest"
+        ret, out, err = run_subprocess_sync(alt_cmd, capture_output=True)
+        if ret == 0:
+            print("[+] ParamSpider installed successfully with alternative method.")
+            return True
+
+    print(f"[!] Failed to install {tool_name}")
+    return False
+
+def install_system_dependencies():
+    """Install required system dependencies"""
+    print("[*] Checking system dependencies...")
+
+    if is_linux():
+        # Install basic dependencies
+        print("[*] Installing basic system dependencies...")
+        run_subprocess_sync("sudo apt-get update -y")
+        run_subprocess_sync("sudo apt-get install -y git golang python3-venv python3-pip")
+
+        # Install wordlist for dirsearch
+        if not os.path.exists(DEFAULT_WORDLIST_LINUX):
+            print("[*] Installing default wordlist...")
+            run_subprocess_sync("sudo apt-get install -y dirbuster")
+
+    elif is_windows():
+        print("[*] Please ensure you have Git, Go, and Python installed on Windows")
+        print("[*] You may need to install Chocolatey first: https://chocolatey.org/install")
+        run_subprocess_sync("choco install git golang python -y", capture_output=False)
 
 def ensure_tools_installed():
-    """
-    Ensure Go is installed, then install each Go tool and Python tool if missing.
-    """
-    ensure_go_installed()
+    """Ensure all required tools are installed"""
+    setup_environment()
+    install_system_dependencies()
 
-    for binary, go_info in GO_TOOLS.items():
-        if not check_binary(binary):
-            install_go_tool(binary, go_info["install"])
+    # Install Go tools
+    for tool, info in GO_TOOLS.items():
+        if not check_binary(tool):
+            if not install_go_tool(tool, info["install"]):
+                print(f"[!] Warning: {tool} installation failed")
         else:
-            print(f"[+] {binary} already installed.")
+            print(f"[+] {tool} is already installed")
 
-    for binary, pkg in PYPI_TOOLS.items():
-        if not check_binary(binary):
-            install_python_tool(binary, pkg)
+    # Install Python tools
+    for tool, pkg in PYPI_TOOLS.items():
+        if not check_binary(tool):
+            if not install_python_tool(tool, pkg):
+                print(f"[!] Warning: {tool} installation failed")
         else:
-            print(f"[+] {binary} already installed.")
+            print(f"[+] {tool} is already installed")
 
-    print("[+] All required tools are installed or already present.")
+    print("[+] Tool installation verification complete")
 
 def write_domain_file(domain: str):
-    """
-    Write the target domain into 'domain.txt'.
-    """
+    """Write the target domain into 'domain.txt'"""
     with open("domain.txt", "w", encoding="utf-8") as f:
         f.write(domain + "\n")
     print(f"[+] domain.txt created with {domain}")
 
-# ----------------------------
-#     Asynchronous Recon Tasks
-# ----------------------------
-
+# Asynchronous Recon Tasks (unchanged from original)
 async def run_subprocess_async(cmd: str, outfile: str = None):
-    """
-    Run a shell command asynchronously.
-    If 'outfile' is provided, write stdout into that file; otherwise print stdout.
-    """
     print(f"[+] Running (async): {cmd}")
     process = await asyncio.create_subprocess_shell(
         cmd,
@@ -246,21 +234,12 @@ async def run_subprocess_async(cmd: str, outfile: str = None):
             print(out_text)
 
 async def recon_subfinder(domain: str):
-    """
-    Run 'subfinder' and save output to 'subfinder.txt'.
-    """
     await run_subprocess_async(f"subfinder -d {domain}", "subfinder.txt")
 
 async def recon_assetfinder(domain: str):
-    """
-    Run 'assetfinder' and save output to 'assetfinder.txt'.
-    """
     await run_subprocess_async(f"assetfinder {domain}", "assetfinder.txt")
 
 async def recon_merge_subs():
-    """
-    Merge 'subfinder.txt' and 'assetfinder.txt' into 'uniq_subs.txt' (deduplicated).
-    """
     if not (os.path.exists("subfinder.txt") and os.path.exists("assetfinder.txt")):
         print("[!] Cannot merge subs: subfinder.txt or assetfinder.txt missing.")
         return
@@ -277,24 +256,16 @@ async def recon_merge_subs():
     print("[+] Unique subdomains written to uniq_subs.txt")
 
 async def recon_httpx_cli():
-    """
-    Run 'httpx' CLI on 'uniq_subs.txt', save to 'httpx_cli.txt'.
-    """
     if not os.path.exists("uniq_subs.txt"):
         print("[!] uniq_subs.txt not found, skipping httpx CLI step.")
         return
     await run_subprocess_async("httpx -l uniq_subs.txt -o httpx_cli.txt", "httpx_cli.txt")
 
 async def recon_httpx_async():
-    """
-    Perform HTTP scanning (status, title, IP, server) on uniq_subs.txt using aiohttp asynchronously.
-    Results saved to 'httpx_async.csv'.
-    """
     if not os.path.exists("uniq_subs.txt"):
         print("[!] uniq_subs.txt not found, skipping httpx async step.")
         return
 
-    # Read hosts
     hosts = []
     with open("uniq_subs.txt", "r", encoding="utf-8") as f:
         for line in f:
@@ -310,7 +281,6 @@ async def recon_httpx_async():
         data = {"host": host, "status": "N/A", "title": "N/A", "ip": "N/A", "server": "N/A"}
         try:
             async with sem:
-                # DNS resolve
                 try:
                     ip = socket.gethostbyname(host)
                     data["ip"] = ip
@@ -324,23 +294,20 @@ async def recon_httpx_async():
 
                     if resp.status == 200:
                         text = await resp.text()
-                        # Extract <title> tag content
                         match = re.search(r"<title>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
                         if match:
                             title = match.group(1).strip()
-                            # sanitize title (remove newlines)
                             title = re.sub(r"[\r\n]+", " ", title)
                             data["title"] = title
                     return data
         except Exception as e:
-            data["title"] = f"Error"
+            data["title"] = f"Error: {str(e)}"
             return data
 
     async with aiohttp.ClientSession(timeout=session_timeout) as session:
         tasks = [fetch_info(session, host) for host in hosts]
         results = await asyncio.gather(*tasks)
 
-    # Write CSV file
     with open("httpx_async.csv", "w", newline="", encoding="utf-8") as csvfile:
         fieldnames = ["host", "status", "title", "ip", "server"]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -350,102 +317,110 @@ async def recon_httpx_async():
     print("[+] httpx async scan saved to httpx_async.csv")
 
 async def recon_gau(domain: str):
-    """
-    Run 'gau' on domain and save output to 'gau.txt'.
-    """
     await run_subprocess_async(f"gau {domain}", "gau.txt")
 
 async def recon_waybackurls(domain: str):
-    """
-    Run 'waybackurls' on domain and save output to 'waybackurls.txt'.
-    """
     await run_subprocess_async(f"waybackurls {domain}", "waybackurls.txt")
 
 async def recon_paramspider(domain: str):
-    """
-    Run 'paramspider' on domain, save output to 'paramspider.txt'.
-    """
     await run_subprocess_async(f"paramspider -d {domain}", "paramspider.txt")
 
 async def recon_dirsearch(url: str):
-    """
-    Run 'dirsearch' brute forcing on URL.
-    """
     if not url:
         print("[!] URL not provided, skipping dirsearch.")
         return
 
-    # Determine default wordlist path based on OS
-    if is_linux():
-        wordlist = DEFAULT_WORDLIST_LINUX
-    elif is_windows():
-        wordlist = DEFAULT_WORDLIST_WINDOWS
-    else:
-        wordlist = ""
+    wordlist = DEFAULT_WORDLIST_LINUX if is_linux() else DEFAULT_WORDLIST_WINDOWS
+    if not os.path.isfile(wordlist):
+        print(f"[!] Wordlist not found: {wordlist}")
+        if is_linux():
+            print("[*] Attempting to download common wordlist...")
+            wordlist_url = "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/directory-list-2.3-medium.txt"
+            wordlist = os.path.join(os.getcwd(), "directory-list-2.3-medium.txt")
+            cmd = f"wget {wordlist_url} -O {wordlist}"
+            run_subprocess_sync(cmd)
+        else:
+            print("[!] Please download a wordlist manually")
+            return
 
     if not os.path.isfile(wordlist):
-        print(f"[!] Wordlist not found: {wordlist}. Please set correct path or install wordlist.")
+        print("[!] Could not download wordlist, skipping dirsearch")
         return
 
     cmd = f"dirsearch -u {url} -e php,asp,aspx,jsp,html,js,json -w {wordlist} --plain-text-report=dirsearch.txt"
     await run_subprocess_async(cmd)
 
-# ----------------------------
-#      Main Function
-# ----------------------------
-
 async def main():
-    parser = argparse.ArgumentParser(description='Cross-platform asynchronous reconnaissance script.')
-    parser.add_argument('domain', type=str, help='Target domain for reconnaissance')
-    parser.add_argument('--url', type=str, help='Optional URL for directory brute-forcing')
+    parser = argparse.ArgumentParser(description='Automated reconnaissance script with dependency installation')
+    parser.add_argument('domain', nargs='?', help='Target domain for reconnaissance')
+    parser.add_argument('--url', type=str, help='URL for directory brute-forcing')
     parser.add_argument('--install', action='store_true', help='Install required tools and exit')
     args = parser.parse_args()
 
     if args.install:
+        print("[*] Starting tool installation process...")
         ensure_tools_installed()
+        print("[+] Tool installation complete. You can now run the reconnaissance.")
         sys.exit(0)
+
+    if not args.domain and not args.url:
+        parser.print_usage()
+        sys.exit(1)
+
+    # Extract domain from URL if not provided
+    if args.url and not args.domain:
+        parsed = urlparse(args.url)
+        args.domain = parsed.netloc if parsed.netloc else args.url.split('/')[0]
+        print(f"[*] Extracted domain from URL: {args.domain}")
 
     domain = args.domain
     url = args.url
 
-    print(f"[*] Starting recon on domain: {domain}")
+    print(f"[*] Starting reconnaissance on domain: {domain}")
     if url:
-        print(f"[*] URL provided for dirsearch: {url}")
+        print(f"[*] URL provided for additional scanning: {url}")
 
+    # Verify all tools are installed
+    print("[*] Verifying tool installation...")
     ensure_tools_installed()
+
+    # Check for missing tools
+    required_tools = list(GO_TOOLS.keys()) + list(PYPI_TOOLS.keys())
+    missing_tools = [tool for tool in required_tools if not check_binary(tool)]
+
+    if missing_tools:
+        print(f"[!] The following required tools are missing: {', '.join(missing_tools)}")
+        print("[!] Please install them manually or use --install flag")
+        print("[!] Some tools might need to be installed with sudo or in a virtual environment")
+        sys.exit(1)
 
     write_domain_file(domain)
 
-    # Run subfinder and assetfinder concurrently
+    print("[*] Starting reconnaissance tasks...")
     await asyncio.gather(
         recon_subfinder(domain),
         recon_assetfinder(domain)
     )
 
-    # Merge results
     await recon_merge_subs()
-
-    # Run httpx CLI scanner on unique subs
     await recon_httpx_cli()
-
-    # Run httpx async HTTP checks
     await recon_httpx_async()
 
-    # Run gau, waybackurls, paramspider concurrently
     await asyncio.gather(
         recon_gau(domain),
         recon_waybackurls(domain),
         recon_paramspider(domain)
     )
 
-    # Run dirsearch if URL is provided
     if url:
         await recon_dirsearch(url)
 
-    print("[*] Recon complete.")
+    print("[+] Reconnaissance complete. Results saved in current directory.")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n[!] Interrupted by user. Exiting...")
+        print("\n[!] Process interrupted by user. Exiting...")
+    except Exception as e:
+        print(f"[!] An error occurred: {str(e)}")

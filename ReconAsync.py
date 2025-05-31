@@ -320,8 +320,27 @@ async def recon_httpx_cli():
         print("[!] uniq_subs.txt not found, skipping httpx CLI step.")
         return
 
-    # Use cat to pipe input to httpx
-    await run_subprocess_async("cat uniq_subs.txt | httpx -silent -o httpx_cli.txt", "httpx_cli.txt")
+    # Read the file and process each host individually
+    with open("uniq_subs.txt", "r", encoding="utf-8") as f:
+        hosts = [line.strip() for line in f if line.strip()]
+
+    # Process hosts in batches
+    batch_size = 20
+    output_file = "httpx_cli.txt"
+
+    with open(output_file, "w", encoding="utf-8") as out_f:
+        for i in range(0, len(hosts), batch_size):
+            batch = hosts[i:i + batch_size]
+            for host in batch:
+                # Run httpx for each host individually
+                cmd = f"httpx -u http://{host} -silent"
+                ret, out, err = run_subprocess_sync(cmd, capture_output=True)
+                if ret == 0 and out:
+                    out_f.write(f"{host}: {out}\n")
+                elif err:
+                    out_f.write(f"{host}: Error - {err}\n")
+
+    print(f"[+] httpx CLI scan saved to {output_file}")
 
 async def recon_httpx_async():
     """
@@ -334,36 +353,47 @@ async def recon_httpx_async():
 
     hosts = []
     with open("uniq_subs.txt", "r", encoding="utf-8") as f:
-        for line in f:
-            host = line.strip()
-            if host:
-                hosts.append(host)
+        hosts = [line.strip() for line in f if line.strip()]
 
-    # Process in batches to avoid command line length limits
-    batch_size = 20
-    results = []
+    # Write CSV header
+    with open("httpx_async.csv", "w", newline="", encoding="utf-8") as csvfile:
+        fieldnames = ["host", "status", "title", "ip", "server", "error"]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
 
-    for i in range(0, len(hosts), batch_size):
-        batch = hosts[i:i + batch_size]
-        cmd = f"httpx -list {','.join(batch)} -silent -csv -o httpx_async_temp.csv"
-        await run_subprocess_async(cmd)
+        for host in hosts:
+            cmd = f"httpx -u http://{host} -silent -json"
+            ret, out, err = run_subprocess_sync(cmd, capture_output=True)
 
-        # Append temporary results to final file
-        if os.path.exists("httpx_async_temp.csv"):
-            with open("httpx_async_temp.csv", "r") as temp_file:
-                if i == 0:
-                    # Write header for first batch
-                    with open("httpx_async.csv", "w") as final_file:
-                        final_file.write(temp_file.readline())
-                        final_file.writelines(temp_file.readlines())
-                else:
-                    # Skip header for subsequent batches
-                    with open("httpx_async.csv", "a") as final_file:
-                        next(temp_file)  # Skip header
-                        final_file.writelines(temp_file.readlines())
-            os.remove("httpx_async_temp.csv")
+            result = {
+                "host": host,
+                "status": "N/A",
+                "title": "N/A",
+                "ip": "N/A",
+                "server": "N/A",
+                "error": err if err else ""
+            }
+
+            if ret == 0 and out:
+                try:
+                    # Parse the JSON output
+                    import json
+                    data = json.loads(out)
+                    if isinstance(data, list) and len(data) > 0:
+                        data = data[0]
+                    result.update({
+                        "status": data.get("status_code", "N/A"),
+                        "title": data.get("title", "N/A"),
+                        "ip": data.get("a", [{}])[0].get("ip", "N/A"),
+                        "server": data.get("webserver", "N/A")
+                    })
+                except Exception as e:
+                    result["error"] = f"JSON parsing error: {str(e)}"
+
+            writer.writerow(result)
 
     print("[+] httpx async scan saved to httpx_async.csv")
+
 
 async def recon_gau(domain: str):
     """Run gau to fetch URLs and save to 'gau.txt'."""

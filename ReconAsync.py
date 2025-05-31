@@ -12,7 +12,6 @@ import subprocess
 import shutil
 import platform
 import asyncio
-import aiohttp
 import socket
 import csv
 import re
@@ -36,10 +35,6 @@ GO_TOOLS = {
         "install": "github.com/projectdiscovery/httpx/cmd/httpx@latest",
         "repo": "https://github.com/projectdiscovery/httpx"
     },
-    "gobuster": {
-        "install": "github.com/OJ/gobuster/v3@latest",
-        "repo": "https://github.com/OJ/gobuster"
-    },
     "gau": {
         "install": "github.com/lc/gau/v2/cmd/gau@latest",
         "repo": "https://github.com/lc/gau"
@@ -51,7 +46,8 @@ GO_TOOLS = {
 }
 
 PYPI_TOOLS = {
-    "dirsearch": "dirsearch"
+    "dirsearch": "dirsearch",
+    "aiohttp": "aiohttp"
 }
 
 # Wordlist configuration
@@ -121,7 +117,7 @@ def install_python_tool(tool_name, package_name):
     """Install a Python tool via pip in the virtual environment."""
     print(f"[*] Installing Python tool: {tool_name}...")
     pip_path = create_virtualenv()
-    cmd = f"{pip_path} install {package_name}"
+    cmd = f"{pip_path} install {package_name} --break-system-packages"
     ret, out, err = run_subprocess_sync(cmd, capture_output=True)
     if ret == 0:
         print(f"[+] {tool_name} installed successfully.")
@@ -139,6 +135,7 @@ def install_paramspider():
 
     tmp_dir = tempfile.mkdtemp(prefix="paramspider_")
     try:
+        # Clone the paramspider repo
         repo_url = "https://github.com/devanshbatham/ParamSpider.git"
         clone_cmd = f"git clone {repo_url} {tmp_dir}"
         ret, out, err = run_subprocess_sync(clone_cmd, capture_output=True)
@@ -146,14 +143,16 @@ def install_paramspider():
             print(f"[!] Failed to clone paramspider repo: {err}")
             return False
 
+        # Install requirements
         req_file = os.path.join(tmp_dir, "requirements.txt")
         if os.path.isfile(req_file):
             pip_path = create_virtualenv()
-            install_reqs_cmd = f"{pip_path} install -r {req_file}"
+            install_reqs_cmd = f"{pip_path} install -r {req_file} --break-system-packages"
             ret, out, err = run_subprocess_sync(install_reqs_cmd, capture_output=True)
             if ret != 0:
                 print(f"[!] Failed to install paramspider requirements: {err}")
 
+        # Run setup.py install
         setup_path = os.path.join(tmp_dir, "setup.py")
         if os.path.isfile(setup_path):
             install_cmd = f"{PYTHON_BIN} {setup_path} install"
@@ -199,7 +198,7 @@ def install_system_dependencies():
     if is_linux():
         print("[*] Installing basic system dependencies for Linux...")
         run_subprocess_sync("sudo apt-get update -y")
-        run_subprocess_sync("sudo apt-get install -y git golang python3-venv python3-pip wget")
+        run_subprocess_sync("sudo apt-get install -y git golang python3-venv python3-pip wget chromium-browser")
     elif is_windows():
         print("[*] Please ensure you have Git, Go, and Python installed on Windows.")
         print("[*] You may need to install Chocolatey first: https://chocolatey.org/install")
@@ -232,6 +231,7 @@ def ensure_tools_installed():
     setup_environment()
     install_system_dependencies()
 
+    # Install Go tools
     for tool, info in GO_TOOLS.items():
         if not check_binary(tool):
             success = install_go_tool(tool, info["install"])
@@ -240,6 +240,7 @@ def ensure_tools_installed():
         else:
             print(f"[+] {tool} is already installed.")
 
+    # Install Python tools via pip
     for tool, pkg in PYPI_TOOLS.items():
         if not check_binary(tool):
             success = install_python_tool(tool, pkg)
@@ -248,6 +249,7 @@ def ensure_tools_installed():
         else:
             print(f"[+] {tool} is already installed.")
 
+    # Install paramspider
     if not check_binary("paramspider"):
         success = install_paramspider()
         if not success:
@@ -289,11 +291,11 @@ async def run_subprocess_async(cmd: str, outfile: str = None):
 
 async def recon_subfinder(domain: str):
     """Run subfinder asynchronously and save results to 'subfinder.txt'."""
-    await run_subprocess_async(f"subfinder -d {domain}", "subfinder.txt")
+    await run_subprocess_async(f"subfinder -d {domain} -o subfinder.txt")
 
 async def recon_assetfinder(domain: str):
     """Run assetfinder asynchronously and save results to 'assetfinder.txt'."""
-    await run_subprocess_async(f"assetfinder {domain}", "assetfinder.txt")
+    await run_subprocess_async(f"assetfinder --subs-only {domain} > assetfinder.txt")
 
 async def recon_merge_subs():
     """Merge subfinder.txt and assetfinder.txt into uniq_subs.txt."""
@@ -305,7 +307,7 @@ async def recon_merge_subs():
         with open(fn, "r", encoding="utf-8") as f:
             for line in f:
                 host = line.strip()
-                if host:
+                if host and not host.startswith("#"):
                     subs.add(host)
     with open("uniq_subs.txt", "w", encoding="utf-8") as f:
         for host in sorted(subs):
@@ -317,7 +319,9 @@ async def recon_httpx_cli():
     if not os.path.exists("uniq_subs.txt"):
         print("[!] uniq_subs.txt not found, skipping httpx CLI step.")
         return
-    await run_subprocess_async("httpx -l uniq_subs.txt -o httpx_cli.txt", "httpx_cli.txt")
+
+    # Use cat to pipe input to httpx
+    await run_subprocess_async("cat uniq_subs.txt | httpx -silent -o httpx_cli.txt", "httpx_cli.txt")
 
 async def recon_httpx_async():
     """
@@ -335,63 +339,48 @@ async def recon_httpx_async():
             if host:
                 hosts.append(host)
 
-    sem = asyncio.Semaphore(MAX_HTTP_CONCURRENCY)
-    session_timeout = aiohttp.ClientTimeout(total=10)
+    # Process in batches to avoid command line length limits
+    batch_size = 20
+    results = []
 
-    async def fetch_info(session, host):
-        url = f"http://{host}"
-        data = {"host": host, "status": "N/A", "title": "N/A", "ip": "N/A", "server": "N/A"}
-        try:
-            async with sem:
-                try:
-                    ip = socket.gethostbyname(host)
-                    data["ip"] = ip
-                except Exception:
-                    data["ip"] = "N/A"
+    for i in range(0, len(hosts), batch_size):
+        batch = hosts[i:i + batch_size]
+        cmd = f"httpx -list {','.join(batch)} -silent -csv -o httpx_async_temp.csv"
+        await run_subprocess_async(cmd)
 
-                async with session.get(url, timeout=10, allow_redirects=True) as resp:
-                    data["status"] = str(resp.status)
-                    server = resp.headers.get("Server", "N/A")
-                    data["server"] = server
+        # Append temporary results to final file
+        if os.path.exists("httpx_async_temp.csv"):
+            with open("httpx_async_temp.csv", "r") as temp_file:
+                if i == 0:
+                    # Write header for first batch
+                    with open("httpx_async.csv", "w") as final_file:
+                        final_file.write(temp_file.readline())
+                        final_file.writelines(temp_file.readlines())
+                else:
+                    # Skip header for subsequent batches
+                    with open("httpx_async.csv", "a") as final_file:
+                        next(temp_file)  # Skip header
+                        final_file.writelines(temp_file.readlines())
+            os.remove("httpx_async_temp.csv")
 
-                    if resp.status == 200:
-                        text = await resp.text()
-                        match = re.search(r"<title>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
-                        if match:
-                            title = match.group(1).strip()
-                            title = re.sub(r"[\r\n]+", " ", title)
-                            data["title"] = title
-                    return data
-        except Exception as e:
-            data["title"] = f"Error: {str(e)}"
-            return data
-
-    async with aiohttp.ClientSession(timeout=session_timeout) as session:
-        tasks = [fetch_info(session, host) for host in hosts]
-        results = await asyncio.gather(*tasks)
-
-    with open("httpx_async.csv", "w", newline="", encoding="utf-8") as csvfile:
-        fieldnames = ["host", "status", "title", "ip", "server"]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        for item in results:
-            writer.writerow(item)
     print("[+] httpx async scan saved to httpx_async.csv")
 
 async def recon_gau(domain: str):
     """Run gau to fetch URLs and save to 'gau.txt'."""
-    await run_subprocess_async(f"gau {domain}", "gau.txt")
+    await run_subprocess_async(f"echo {domain} | gau > gau.txt")
 
 async def recon_waybackurls(domain: str):
     """Run waybackurls and save to 'waybackurls.txt'."""
-    await run_subprocess_async(f"waybackurls {domain}", "waybackurls.txt")
+    await run_subprocess_async(f"echo {domain} | waybackurls > waybackurls.txt")
 
 async def recon_paramspider(domain: str):
     """Run paramspider -d <domain> and save to 'paramspider.txt'."""
     if not check_binary("paramspider"):
         print("[!] paramspider binary not found, skipping paramspider step.")
         return
-    await run_subprocess_async(f"paramspider -d {domain}", "paramspider.txt")
+
+    # Run paramspider with proper arguments
+    await run_subprocess_async(f"paramspider --domain {domain} --output paramspider.txt")
 
 async def recon_dirsearch(url: str):
     """
@@ -408,11 +397,12 @@ async def recon_dirsearch(url: str):
         print("[!] Wordlist not available, skipping dirsearch")
         return
 
+    # Construct the dirsearch command with proper path handling
     dirsearch_cmd = (
         f"dirsearch -u {url} "
         f"-e php,asp,aspx,jsp,html,js,json "
-        f"-w \"{wordlist_path}\" "
-        f"--plain-text-report=dirsearch.txt"
+        f"-w {wordlist_path} "
+        "--plain-text-report=dirsearch.txt"
     )
 
     print(f"[*] Running dirsearch with command: {dirsearch_cmd}")
@@ -463,6 +453,8 @@ async def main():
     )
 
     await recon_merge_subs()
+
+    # Run httpx tasks
     await recon_httpx_cli()
     await recon_httpx_async()
 

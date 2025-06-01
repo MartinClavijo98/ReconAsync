@@ -130,7 +130,7 @@ def build_recon_tasks(domain):
     tasks.append(("if [ -f domains ]; then cat domains | assetfinder --subs-only; else echo '[!] domains file not found, skipping assetfinder subs-only'; fi", None))
 
     # 10. dirsearch -u https://domain (no output file)
-    tasks.append((f"dirsearch -u https://{domain} -e * -o dirsearch.txt", None))
+    tasks.append((f"dirsearch -u https://{domain} -e * > dirsearch.txt", None))
 
     # 11. paramspider -d domain -s -> paramspider.txt
     tasks.append((f"paramspider -d {domain} -s -o paramspider.txt", None))

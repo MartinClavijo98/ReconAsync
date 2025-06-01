@@ -318,7 +318,7 @@ def run_gau(domain):
 def run_paramspider(domain):
     """Run paramspider on domain with timeout handling"""
     output_file = "paramspider.txt"
-    cmd = f"paramspider -d {domain} -o {output_file}"
+    cmd = f"paramspider -d {domain} > {output_file}"
     print_status(f"Running paramspider on {domain}")
     
     _, stderr, retcode = run_command(cmd, timeout=900)  # 15 minute timeout
